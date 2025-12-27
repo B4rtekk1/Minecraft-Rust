@@ -1,0 +1,15 @@
+[package]
+name = "render3d"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wgpu = "26.0.0"
+winit = "0.29"
+pollster = "0.3"
+bytemuck = { version = "1.14", features = ["derive"] }
+cgmath = "0.18"
+noise = "0.9"
+rand = "0.8"
+wgpu_glyph = "0.26"
+image = "0.25"
