@@ -1,4 +1,3 @@
-// Minimal shadow shader - only needs uniforms for sun_view_proj
 struct Uniforms {
     view_proj: mat4x4<f32>,
     sun_view_proj: mat4x4<f32>,

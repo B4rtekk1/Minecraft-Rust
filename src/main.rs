@@ -212,6 +212,8 @@ impl State {
                 }
             };
 
+        let mip_level_count = (atlas_width.max(atlas_height) as f32).log2().floor() as u32 + 1;
+
         let texture_atlas = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Texture Array"),
             size: wgpu::Extent3d {
@@ -219,7 +221,7 @@ impl State {
                 height: atlas_height,
                 depth_or_array_layers: 16,
             },
-            mip_level_count: 1,
+            mip_level_count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -247,6 +249,50 @@ impl State {
             },
         );
 
+        for level in 1..mip_level_count {
+            let m_width = (atlas_width >> level).max(1);
+            let m_height = (atlas_height >> level).max(1);
+            let mut level_data = Vec::with_capacity((m_width * m_height * 4 * 16) as usize);
+
+            for layer in 0..16 {
+                let layer_size = (atlas_width * atlas_height * 4) as usize;
+                let layer_offset = layer * layer_size;
+                let layer_pixels = &atlas_data[layer_offset..layer_offset + layer_size];
+
+                let img =
+                    image::RgbaImage::from_raw(atlas_width, atlas_height, layer_pixels.to_vec())
+                        .expect("Failed to create image from raw atlas data");
+
+                let resized = image::imageops::resize(
+                    &img,
+                    m_width,
+                    m_height,
+                    image::imageops::FilterType::Triangle,
+                );
+                level_data.extend_from_slice(&resized.into_raw());
+            }
+
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture_atlas,
+                    mip_level: level,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &level_data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * m_width),
+                    rows_per_image: Some(m_height),
+                },
+                wgpu::Extent3d {
+                    width: m_width,
+                    height: m_height,
+                    depth_or_array_layers: 16,
+                },
+            );
+        }
+
         let texture_view = texture_atlas.create_view(&wgpu::TextureViewDescriptor {
             label: Some("Texture Array View"),
             dimension: Some(wgpu::TextureViewDimension::D2Array),
@@ -255,12 +301,13 @@ impl State {
 
         let texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Texture Sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            anisotropy_clamp: 16,
             ..Default::default()
         });
 
