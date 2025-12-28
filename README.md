@@ -1,6 +1,6 @@
 # Render3D - Voxel Rendering Engine
 
-Render3D is a high-performance voxel rendering engine and sandbox game built in Rust using the `wgpu` graphics API. It features an infinite procedurally generated world, advanced shaders, and a robust chunk management system.
+Render3D is a high-performance voxel rendering engine and sandbox game built in Rust using the `wgpu` graphics API. It features an infinite procedurally generated world, advanced shaders, dynamic day/night cycle, and a robust chunk management system.
 
 ## Key Features
 
@@ -15,12 +15,18 @@ Render3D is a high-performance voxel rendering engine and sandbox game built in 
 
 ### Advanced Rendering
 
-- **Dynamic Shadow Mapping:** Real-time sun-cast shadows with **3x3 PCF (Percentage Closer Filtering)** for smooth, realistic edges.
+- **Dynamic Shadow Mapping:** Real-time sun-cast shadows with **PCF (Percentage Closer Filtering)** using Vogel disk sampling for smooth, stable shadow edges.
+- **Shadow Map Stabilization:** Texel-snapping algorithm prevents shadow swimming/flickering during camera movement.
+- **Day/Night Cycle:**
+  - Full 360-degree sun rotation creating realistic sunrise, noon, sunset, and night.
+  - Dynamic sky color transitions (blue day, orange sunset, dark night).
+  - Distance-based visibility system with linear interpolation between day (250 blocks) and night (12 blocks) visibility range.
+  - Dynamic ambient lighting that adjusts based on sun position.
 - **Water Shader:**
   - **Reflections & Fresnel:** Realistic surface reflections based on viewing angle.
   - **Wave Animations:** Vertex-displaced wave patterns.
-  - **Specularity:** Sun highlights masked by shadows.
-- **Atmospheric Effects:** Smooth distance fog, atmospheric scattering, and a dynamic skybox with a billboard sun.
+  - **Specularity:** Sun and moon highlights with shadow masking.
+- **Atmospheric Effects:** Distance fog that blends to sky color during day and to black during night.
 - **Frustum Culling:** High-performance AABB-based culling to only render visible subchunks.
 
 ### Gameplay & Mechanics
@@ -39,10 +45,12 @@ Render3D is a high-performance voxel rendering engine and sandbox game built in 
 
 - **Language:** Rust (Edition 2024)
 - **Graphics API:** [wgpu](https://wgpu.rs/) (Vulkan, DX12, Metal, WebGPU)
+- **Shaders:** WGSL (WebGPU Shading Language)
 - **Windowing:** [winit](https://github.com/rust-windowing/winit)
 - **Math:** [cgmath](https://github.com/rustgd/cgmath)
 - **Serialization:** [serde](https://serde.rs/) & [bincode](https://github.com/bincode-org/bincode)
 - **Noise:** [noise-rs](https://github.com/Rye-Dream/noise-rs)
+- **Text Rendering:** [wgpu_glyph](https://github.com/hecrj/wgpu_glyph)
 
 ## Getting Started
 
@@ -81,6 +89,25 @@ Render3D is a high-performance voxel rendering engine and sandbox game built in 
 - **Left Click:** Break block
 - **Right Click:** Place block
 - **Escape:** Release mouse / Pause
+
+## Project Structure
+
+```
+render3d/
+├── src/
+│   ├── main.rs          # Application entry, rendering pipeline, input handling
+│   ├── world.rs         # World generation, chunk management, mesh building
+│   ├── save.rs          # World persistence (save/load)
+│   ├── uniforms.rs      # GPU uniform buffer definitions
+│   └── shaders/
+│       ├── terrain.wgsl # Terrain rendering with shadows and day/night
+│       ├── water.wgsl   # Water rendering with reflections
+│       ├── shadow.wgsl  # Shadow map generation
+│       ├── sun.wgsl     # Sun billboard rendering
+│       └── ui.wgsl      # UI elements (crosshair, coordinates)
+└── assets/
+    └── textures.png     # Texture atlas
+```
 
 ## License
 
