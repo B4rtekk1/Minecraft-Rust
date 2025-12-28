@@ -80,8 +80,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var lit_color = base_color * lighting;
     
     let dist = length(in.world_pos.xz - uniforms.camera_pos.xz);
-    let fog_start = 150.0;
-    let fog_end = 250.0;
+    let fog_start = 120.0;
+    let fog_end = 200.0;
     let fog_factor = clamp((fog_end - dist) / (fog_end - fog_start), 0.0, 1.0);
     let sky_color = vec3<f32>(0.53, 0.81, 0.98);
     
@@ -95,11 +95,17 @@ fn vs_water(model: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     
     var pos = model.position;
-    if model.normal.y > 0.5 {
+    
+    let dist_to_camera = length(pos.xz - uniforms.camera_pos.xz);
+    let simulation_radius = 80.0; 
+    
+    if model.normal.y > 0.5 && dist_to_camera < simulation_radius {
         let wave1 = sin(pos.x * 0.5 + uniforms.time * 2.0) * 0.05;
         let wave2 = sin(pos.z * 0.7 + uniforms.time * 1.5) * 0.04;
         let wave3 = sin((pos.x + pos.z) * 0.3 + uniforms.time * 3.0) * 0.03;
         pos.y += wave1 + wave2 + wave3;
+        pos.y -= 0.15;
+    } else if model.normal.y > 0.5 {
         pos.y -= 0.15;
     }
     
@@ -134,8 +140,8 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     water_color += vec3<f32>(1.0, 0.95, 0.8) * spec * 0.8;
     
     let dist = length(in.world_pos.xz - uniforms.camera_pos.xz);
-    let fog_start = 60.0;
-    let fog_end = 120.0;
+    let fog_start = 50.0;
+    let fog_end = 100.0;
     let fog_factor = clamp((fog_end - dist) / (fog_end - fog_start), 0.0, 1.0);
     
     let final_color = mix(sky_color, water_color, fog_factor);
