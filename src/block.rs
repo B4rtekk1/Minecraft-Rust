@@ -76,18 +76,29 @@ impl BlockType {
     }
 
     pub fn should_render_face_against(&self, neighbor: BlockType) -> bool {
+        // Air always exposes faces
         if neighbor == BlockType::Air {
             return true;
         }
+
+        // Water only renders faces against Air (already handled above)
+        // Water doesn't render internal faces between water blocks
+        // nor faces against solid blocks (they're underwater and invisible)
         if *self == BlockType::Water {
-            return neighbor == BlockType::Air;
+            return false;
         }
+
+        // Solid blocks render faces against water (so you can see underwater terrain)
         if neighbor == BlockType::Water {
             return true;
         }
+
+        // Leaves render against other leaves for proper foliage look
         if *self == BlockType::Leaves && neighbor == BlockType::Leaves {
             return true;
         }
+
+        // Otherwise, render faces against transparent blocks
         neighbor.is_transparent()
     }
 

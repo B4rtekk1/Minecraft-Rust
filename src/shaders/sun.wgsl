@@ -1,5 +1,11 @@
+/// Sun/Moon Billboard Shader
+///
+/// This shader renders the sun (or moon) as a billboard quad that always 
+/// faces the camera and stays at a fixed "infinite" distance.
+
 struct Uniforms {
     view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
     sun_view_proj: mat4x4<f32>,
     camera_pos: vec3<f32>,
     time: f32,
@@ -33,6 +39,11 @@ struct VertexOutput {
     @location(1) color: vec3<f32>,
 };
 
+/// Sun Vertex Shader
+///
+/// Calculates a billboard orientation so the sun always faces the camera.
+/// The sun is positioned at uniforms.camera_pos + sun_dir * 400.0 to simulate 
+/// being in the skybox.
 @vertex
 fn vs_sun(model: VertexInput) -> VertexOutput {
     var out: VertexOutput;
@@ -40,6 +51,7 @@ fn vs_sun(model: VertexInput) -> VertexOutput {
     let sun_dir = normalize(uniforms.sun_position);
     let sun_world_pos = uniforms.camera_pos + sun_dir * 400.0;
     
+    // Construct orthonormal basis for billboarding
     let forward = normalize(uniforms.camera_pos - sun_world_pos);
     let world_up = vec3<f32>(0.0, 1.0, 0.0);
     let right = normalize(cross(world_up, forward));
@@ -47,6 +59,7 @@ fn vs_sun(model: VertexInput) -> VertexOutput {
     
     let size = 30.0;
     
+    // Offset quad corners based on basis vectors
     let offset = right * model.position.x * size + up * model.position.y * size;
     let world_pos = sun_world_pos + offset;
     
@@ -57,6 +70,9 @@ fn vs_sun(model: VertexInput) -> VertexOutput {
     return out;
 }
 
+/// Sun Fragment Shader
+///
+/// Renders a procedural sun disk with a bright core and a soft outer glow.
 @fragment
 fn fs_sun(in: VertexOutput) -> @location(0) vec4<f32> {
     let center = vec2<f32>(0.5, 0.5);
@@ -66,9 +82,11 @@ fn fs_sun(in: VertexOutput) -> @location(0) vec4<f32> {
     let glow_radius = 0.5;
     
     if dist < core_radius {
+        // Bright solar core
         let intensity = 1.0 - (dist / core_radius) * 0.2;
         return vec4<f32>(1.0, 0.98, 0.9, intensity);
     } else if dist < glow_radius {
+        // Exponentially fading outer glow
         let glow_factor = 1.0 - (dist - core_radius) / (glow_radius - core_radius);
         let glow_intensity = glow_factor * glow_factor * 0.8;
         let glow_color = vec3<f32>(1.0, 0.9, 0.6);

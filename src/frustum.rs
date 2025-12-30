@@ -52,42 +52,54 @@ impl AABB {
 
 pub fn extract_frustum_planes(view_proj: &Matrix4<f32>) -> [Vector4<f32>; 6] {
     let m = view_proj;
-    [
+    let mut planes = [
+        // Left
         Vector4::new(
             m[0][3] + m[0][0],
             m[1][3] + m[1][0],
             m[2][3] + m[2][0],
             m[3][3] + m[3][0],
         ),
+        // Right
         Vector4::new(
             m[0][3] - m[0][0],
             m[1][3] - m[1][0],
             m[2][3] - m[2][0],
             m[3][3] - m[3][0],
         ),
+        // Bottom
         Vector4::new(
             m[0][3] + m[0][1],
             m[1][3] + m[1][1],
             m[2][3] + m[2][1],
             m[3][3] + m[3][1],
         ),
+        // Top
         Vector4::new(
             m[0][3] - m[0][1],
             m[1][3] - m[1][1],
             m[2][3] - m[2][1],
             m[3][3] - m[3][1],
         ),
-        Vector4::new(
-            m[0][3] + m[0][2],
-            m[1][3] + m[1][2],
-            m[2][3] + m[2][2],
-            m[3][3] + m[3][2],
-        ),
+        // Near (WGPU depth is [0, 1])
+        Vector4::new(m[0][2], m[1][2], m[2][2], m[3][2]),
+        // Far
         Vector4::new(
             m[0][3] - m[0][2],
             m[1][3] - m[1][2],
             m[2][3] - m[2][2],
             m[3][3] - m[3][2],
         ),
-    ]
+    ];
+
+    // Normalize planes so that distances are in world units
+    for plane in &mut planes {
+        let length = (plane.x * plane.x + plane.y * plane.y + plane.z * plane.z).sqrt();
+        plane.x /= length;
+        plane.y /= length;
+        plane.z /= length;
+        plane.w /= length;
+    }
+
+    planes
 }

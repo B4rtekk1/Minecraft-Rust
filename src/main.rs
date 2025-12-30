@@ -4,7 +4,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 
 use bytemuck;
-use cgmath::{InnerSpace, Matrix4, Rad};
+use cgmath::{InnerSpace, Matrix4, Rad, SquareMatrix};
 use wgpu::util::DeviceExt;
 use wgpu_glyph::{GlyphBrush, GlyphBrushBuilder, Section, Text, ab_glyph};
 use winit::{
@@ -15,11 +15,36 @@ use winit::{
     window::{CursorGrabMode, Window, WindowBuilder},
 };
 
+mod multiplayer;
+mod ui;
+
+use clap::Parser;
+use multiplayer::network::{connect_to_server, update_network};
+use multiplayer::player::{RemotePlayer, queue_remote_players_labels};
+use multiplayer::protocol::{Packet, decode_pitch, decode_yaw};
+use multiplayer::tcp::{TcpClient, TcpServer};
+use std::collections::HashMap;
+// use tokio::sync::mpsc;
+use ui::menu::{GameState, MenuField, MenuState};
+
+/// Mini Minecraft 3D Game
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Start as a server (host a game)
+    #[arg(long, default_value_t = false)]
+    server: bool,
+
+    /// Port to bind the server to (default: 25565)
+    #[arg(long, default_value_t = 25565)]
+    port: u16,
+}
+
 use render3d::{
     BlockType, CHUNK_SIZE, Camera, DEFAULT_WORLD_FILE, DiggingState, InputState, NUM_SUBCHUNKS,
     RENDER_DISTANCE, SUBCHUNK_HEIGHT, SavedWorld, TEXTURE_SIZE, Uniforms, Vertex, World,
-    build_crosshair, extract_frustum_planes, generate_texture_atlas, load_texture_atlas_from_file,
-    load_world, save_world,
+    build_crosshair, build_player_model, extract_frustum_planes, generate_texture_atlas,
+    load_texture_atlas_from_file, load_world, save_world,
 };
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -38,6 +63,7 @@ struct State {
     render_pipeline: wgpu::RenderPipeline,
     water_pipeline: wgpu::RenderPipeline,
     sun_pipeline: wgpu::RenderPipeline,
+    sky_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
     crosshair_pipeline: wgpu::RenderPipeline,
     sun_vertex_buffer: wgpu::Buffer,
@@ -68,6 +94,9 @@ struct State {
     coords_vertex_buffer: Option<wgpu::Buffer>,
     coords_index_buffer: Option<wgpu::Buffer>,
     coords_num_indices: u32,
+    last_coords_position: (i32, i32, i32),
+    progress_bar_vertex_buffer: Option<wgpu::Buffer>,
+    progress_bar_index_buffer: Option<wgpu::Buffer>,
     #[allow(dead_code)]
     texture_atlas: wgpu::Texture,
     #[allow(dead_code)]
@@ -76,6 +105,21 @@ struct State {
     texture_sampler: wgpu::Sampler,
     glyph_brush: GlyphBrush<(), ab_glyph::FontArc>,
     staging_belt: wgpu::util::StagingBelt,
+    game_state: GameState,
+    menu_state: MenuState,
+    // Multiplayer
+    network_client: Option<TcpClient>,
+    remote_players: HashMap<u32, RemotePlayer>,
+    my_player_id: u32,
+    last_position_send: Instant,
+    network_runtime: Option<tokio::runtime::Runtime>,
+    network_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Packet>>,
+    network_tx: Option<tokio::sync::mpsc::UnboundedSender<Packet>>,
+    last_input_time: Instant,
+    // Player model rendering
+    player_model_vertex_buffer: Option<wgpu::Buffer>,
+    player_model_index_buffer: Option<wgpu::Buffer>,
+    player_model_num_indices: u32,
 }
 
 impl State {
@@ -152,10 +196,16 @@ impl State {
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/sun.wgsl").into()),
         });
 
+        let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Sky Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/sky.wgsl").into()),
+        });
+
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
             contents: bytemuck::cast_slice(&[Uniforms {
                 view_proj: Matrix4::from_scale(1.0).into(),
+                inv_view_proj: Matrix4::from_scale(1.0).into(),
                 sun_view_proj: Matrix4::from_scale(1.0).into(),
                 camera_pos: [0.0, 0.0, 0.0],
                 time: 0.0,
@@ -582,11 +632,7 @@ impl State {
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState {
-                    constant: 2,
-                    slope_scale: 2.0,
-                    clamp: 0.0,
-                },
+                bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
@@ -622,6 +668,44 @@ impl State {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: false,
                 depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
+        // Sky pipeline - renders a fullscreen quad with procedural sky
+        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Sky Pipeline"),
+            layout: Some(&pipeline_layout),
+            cache: None,
+            vertex: wgpu::VertexState {
+                module: &sky_shader,
+                entry_point: Some("vs_sky"),
+                compilation_options: Default::default(),
+                buffers: &[Vertex::desc()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &sky_shader,
+                entry_point: Some("fs_sky"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -696,11 +780,10 @@ impl State {
         });
 
         let staging_belt = wgpu::util::StagingBelt::new(1024);
-        let font = ab_glyph::FontArc::try_from_slice(include_bytes!("c:/Windows/Fonts/arial.ttf"))
-            .or_else(|_| {
-                ab_glyph::FontArc::try_from_slice(include_bytes!("c:/Windows/Fonts/consola.ttf"))
-            })
-            .expect("Could not load font");
+        let font = ab_glyph::FontArc::try_from_slice(include_bytes!(
+            "../assets/fonts/GoogleSans_17pt-Regular.ttf"
+        ))
+        .expect("Could not load font");
         let glyph_brush = GlyphBrushBuilder::using_font(font).build(&device, surface_format);
 
         Self {
@@ -711,6 +794,7 @@ impl State {
             render_pipeline,
             water_pipeline,
             sun_pipeline,
+            sky_pipeline,
             shadow_pipeline,
             crosshair_pipeline,
             sun_vertex_buffer,
@@ -740,175 +824,44 @@ impl State {
             coords_vertex_buffer: None,
             coords_index_buffer: None,
             coords_num_indices: 0,
+            last_coords_position: (i32::MIN, i32::MIN, i32::MIN),
+            progress_bar_vertex_buffer: None,
+            progress_bar_index_buffer: None,
             texture_atlas,
             texture_view,
             texture_sampler,
             glyph_brush,
             staging_belt,
+            game_state: GameState::Menu,
+            menu_state: MenuState::default(),
+            // Multiplayer
+            network_client: None,
+            remote_players: HashMap::new(),
+            my_player_id: 0,
+            last_position_send: Instant::now(),
+            network_runtime: Some(
+                tokio::runtime::Runtime::new().expect("Failed to create tokio runtime"),
+            ),
+            network_rx: None,
+            network_tx: None,
+            last_input_time: Instant::now(),
+            // Player model rendering
+            player_model_vertex_buffer: None,
+            player_model_index_buffer: None,
+            player_model_num_indices: 0,
         }
     }
 
     fn update_coords_ui(&mut self) {
-        let x = self.camera.position.x;
-        let y = self.camera.position.y;
-        let z = self.camera.position.z;
-
-        let text = format!("X:{:.0} Y:{:.0} Z:{:.0}", x, y, z);
-
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-
-        let char_width = 0.018;
-        let char_height = 0.032;
-        let line_thickness = 0.004;
-        let char_spacing = char_width * 0.6;
-        let gap_spacing = char_width + 0.005;
-
-        let mut total_width = 0.0;
-        for ch in text.chars() {
-            if ch == ' ' {
-                total_width += char_spacing;
-            } else {
-                total_width += gap_spacing;
-            }
+        if let Some((vb, ib, num_indices)) = ui::ui::update_coords_ui(
+            &self.device,
+            self.camera.position,
+            &mut self.last_coords_position,
+        ) {
+            self.coords_vertex_buffer = Some(vb);
+            self.coords_index_buffer = Some(ib);
+            self.coords_num_indices = num_indices;
         }
-
-        let start_x = 0.98 - total_width;
-        let start_y = 0.95;
-
-        let mut cursor_x = start_x;
-        let cursor_y = start_y;
-        let color = [1.0, 1.0, 1.0];
-        let normal = [0.0, 0.0, 1.0];
-
-        let add_segment =
-            |x1: f32, y1: f32, x2: f32, y2: f32, verts: &mut Vec<Vertex>, inds: &mut Vec<u32>| {
-                let base_idx = verts.len() as u32;
-                let dx = x2 - x1;
-                let dy = y2 - y1;
-                let len = (dx * dx + dy * dy).sqrt();
-                if len < 0.001 {
-                    return;
-                }
-                let nx = -dy / len * line_thickness * 0.5;
-                let ny = dx / len * line_thickness * 0.5;
-
-                verts.push(Vertex {
-                    position: [x1 - nx, y1 - ny, 0.0],
-                    normal,
-                    color,
-                    uv: [0.0, 0.0],
-                    tex_index: 0.0,
-                });
-                verts.push(Vertex {
-                    position: [x2 - nx, y2 - ny, 0.0],
-                    normal,
-                    color,
-                    uv: [1.0, 0.0],
-                    tex_index: 0.0,
-                });
-                verts.push(Vertex {
-                    position: [x2 + nx, y2 + ny, 0.0],
-                    normal,
-                    color,
-                    uv: [1.0, 1.0],
-                    tex_index: 0.0,
-                });
-                verts.push(Vertex {
-                    position: [x1 + nx, y1 + ny, 0.0],
-                    normal,
-                    color,
-                    uv: [0.0, 1.0],
-                    tex_index: 0.0,
-                });
-                inds.extend_from_slice(&[
-                    base_idx,
-                    base_idx + 1,
-                    base_idx + 2,
-                    base_idx,
-                    base_idx + 2,
-                    base_idx + 3,
-                ]);
-            };
-
-        fn get_char_segments(ch: char) -> Vec<(f32, f32, f32, f32)> {
-            let seg_top = (0.0, 1.0, 1.0, 1.0);
-            let seg_tr = (1.0, 1.0, 1.0, 0.5);
-            let seg_br = (1.0, 0.5, 1.0, 0.0);
-            let seg_bot = (0.0, 0.0, 1.0, 0.0);
-            let seg_bl = (0.0, 0.5, 0.0, 0.0);
-            let seg_tl = (0.0, 1.0, 0.0, 0.5);
-            let seg_mid = (0.0, 0.5, 1.0, 0.5);
-
-            match ch {
-                '0' => vec![seg_top, seg_tr, seg_br, seg_bot, seg_bl, seg_tl],
-                '1' => vec![seg_tr, seg_br],
-                '2' => vec![seg_top, seg_tr, seg_mid, seg_bl, seg_bot],
-                '3' => vec![seg_top, seg_tr, seg_mid, seg_br, seg_bot],
-                '4' => vec![seg_tl, seg_mid, seg_tr, seg_br],
-                '5' => vec![seg_top, seg_tl, seg_mid, seg_br, seg_bot],
-                '6' => vec![seg_top, seg_tl, seg_mid, seg_br, seg_bot, seg_bl],
-                '7' => vec![seg_top, seg_tr, seg_br],
-                '8' => vec![seg_top, seg_tr, seg_br, seg_bot, seg_bl, seg_tl, seg_mid],
-                '9' => vec![seg_top, seg_tr, seg_br, seg_bot, seg_tl, seg_mid],
-                'X' => vec![(0.0, 1.0, 1.0, 0.0), (0.0, 0.0, 1.0, 1.0)],
-                'Y' => vec![
-                    (0.0, 1.0, 0.5, 0.5),
-                    (1.0, 1.0, 0.5, 0.5),
-                    (0.5, 0.5, 0.5, 0.0),
-                ],
-                'Z' => vec![seg_top, (1.0, 1.0, 0.0, 0.0), seg_bot],
-                ':' => vec![(0.4, 0.7, 0.6, 0.7), (0.4, 0.3, 0.6, 0.3)],
-                '.' => vec![(0.4, 0.1, 0.6, 0.1)],
-                '-' => vec![seg_mid],
-                _ => vec![],
-            }
-        }
-
-        for ch in text.chars() {
-            if ch == ' ' {
-                cursor_x += char_spacing;
-                continue;
-            }
-
-            let segments = get_char_segments(ch);
-            for (x1, y1, x2, y2) in segments {
-                let px1 = cursor_x + x1 * char_width;
-                let py1 = cursor_y - char_height + y1 * char_height;
-                let px2 = cursor_x + x2 * char_width;
-                let py2 = cursor_y - char_height + y2 * char_height;
-                add_segment(px1, py1, px2, py2, &mut vertices, &mut indices);
-            }
-
-            cursor_x += gap_spacing;
-        }
-
-        if vertices.is_empty() {
-            self.coords_vertex_buffer = None;
-            self.coords_index_buffer = None;
-            self.coords_num_indices = 0;
-            return;
-        }
-
-        let vb = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Coords Vertex Buffer"),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-
-        let ib = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Coords Index Buffer"),
-                contents: bytemuck::cast_slice(&indices),
-                usage: wgpu::BufferUsages::INDEX,
-            });
-
-        self.coords_vertex_buffer = Some(vb);
-        self.coords_index_buffer = Some(ib);
-        self.coords_num_indices = indices.len() as u32;
     }
 
     fn create_depth_texture(
@@ -942,6 +895,7 @@ impl State {
     }
 
     fn update(&mut self) {
+        self.update_network();
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
@@ -991,6 +945,41 @@ impl State {
 
         self.staging_belt.recall();
 
+        // Build remote player meshes before starting render pass
+        if !self.remote_players.is_empty() && self.game_state != GameState::Menu {
+            let mut all_vertices = Vec::new();
+            let mut all_indices = Vec::new();
+
+            for (_id, player) in &self.remote_players {
+                let (vertices, indices) =
+                    build_player_model(player.x, player.y, player.z, player.yaw);
+                let base_idx = all_vertices.len() as u32;
+                all_vertices.extend(vertices);
+                all_indices.extend(indices.iter().map(|i| i + base_idx));
+            }
+
+            self.player_model_num_indices = all_indices.len() as u32;
+
+            if !all_vertices.is_empty() {
+                self.player_model_vertex_buffer = Some(self.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("Player Model Vertex Buffer"),
+                        contents: bytemuck::cast_slice(&all_vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    },
+                ));
+                self.player_model_index_buffer = Some(self.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("Player Model Index Buffer"),
+                        contents: bytemuck::cast_slice(&all_indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    },
+                ));
+            }
+        } else {
+            self.player_model_num_indices = 0;
+        }
+
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1005,10 +994,11 @@ impl State {
 
         let time = self.game_start_time.elapsed().as_secs_f32();
 
-        let day_cycle_speed = 0.05;
-        let sun_angle = time * day_cycle_speed - std::f32::consts::FRAC_PI_2;
+        let day_cycle_speed = 0.005;
+        // Start at noon (sun at top) by adding PI/2 offset
+        let sun_angle = time * day_cycle_speed;
 
-        let sun_x = 0.3;
+        let sun_x = 0.0;
         let sun_y = sun_angle.sin();
         let sun_z = sun_angle.cos();
         let sun_dir = cgmath::Vector3::new(sun_x, sun_y, sun_z).normalize();
@@ -1045,7 +1035,7 @@ impl State {
 
         let sun_pos = cgmath::Point3::new(
             shadow_center.x + sun_dir.x * sun_distance,
-            shadow_center.y + sun_dir.y * sun_distance + 100.0,
+            shadow_center.y + sun_dir.y * sun_distance,
             shadow_center.z + sun_dir.z * sun_distance,
         );
 
@@ -1055,11 +1045,15 @@ impl State {
         let sun_view_proj = OPENGL_TO_WGPU_MATRIX * sun_proj * sun_view;
         let sun_view_proj_array: [[f32; 4]; 4] = sun_view_proj.into();
 
+        let inv_view_proj = view_proj.invert().unwrap_or(Matrix4::identity());
+        let inv_view_proj_array: [[f32; 4]; 4] = inv_view_proj.into();
+
         self.queue.write_buffer(
             &self.uniform_buffer,
             0,
             bytemuck::cast_slice(&[Uniforms {
                 view_proj: view_proj_array,
+                inv_view_proj: inv_view_proj_array,
                 sun_view_proj: sun_view_proj_array,
                 camera_pos: self.camera.eye_position().into(),
                 time,
@@ -1069,9 +1063,10 @@ impl State {
         );
 
         let frustum_planes = extract_frustum_planes(&view_proj);
+        let shadow_frustum = extract_frustum_planes(&sun_view_proj);
 
-        let player_cx = (self.camera.position.x as i32) / CHUNK_SIZE;
-        let player_cz = (self.camera.position.z as i32) / CHUNK_SIZE;
+        let player_cx = (self.camera.position.x / CHUNK_SIZE as f32).floor() as i32;
+        let player_cz = (self.camera.position.z / CHUNK_SIZE as f32).floor() as i32;
 
         {
             let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1100,6 +1095,7 @@ impl State {
                             if subchunk.is_empty || subchunk.num_indices == 0 {
                                 continue;
                             }
+                            // Shadow pass culling removed
                             if let (Some(vb), Some(ib)) =
                                 (&subchunk.vertex_buffer, &subchunk.index_buffer)
                             {
@@ -1114,7 +1110,8 @@ impl State {
             }
         }
 
-        let mut meshes_to_build: Vec<(i32, i32, i32)> = Vec::new();
+        // Optimization: Pre-allocate since we limit to max_meshes_per_frame
+        let mut meshes_to_build: Vec<(i32, i32, i32)> = Vec::with_capacity(8);
 
         for cx in (player_cx - RENDER_DISTANCE)..=(player_cx + RENDER_DISTANCE) {
             for cz in (player_cz - RENDER_DISTANCE)..=(player_cz + RENDER_DISTANCE) {
@@ -1219,8 +1216,9 @@ impl State {
             .min(1.0);
 
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
+            // First pass: Render the sky (procedural gradient)
+            let mut sky_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Sky Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
@@ -1239,6 +1237,36 @@ impl State {
                     view: &self.depth_texture,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+
+            sky_pass.set_pipeline(&self.sky_pipeline);
+            sky_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            sky_pass.set_vertex_buffer(0, self.sun_vertex_buffer.slice(..));
+            sky_pass.set_index_buffer(self.sun_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            sky_pass.draw_indexed(0..6, 0, 0..1);
+        }
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -1304,6 +1332,20 @@ impl State {
                 }
             }
 
+            // Render remote player models
+            if self.player_model_num_indices > 0 {
+                if let (Some(vb), Some(ib)) = (
+                    &self.player_model_vertex_buffer,
+                    &self.player_model_index_buffer,
+                ) {
+                    render_pass.set_pipeline(&self.render_pipeline);
+                    render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                    render_pass.set_vertex_buffer(0, vb.slice(..));
+                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.draw_indexed(0..self.player_model_num_indices, 0, 0..1);
+                }
+            }
+
             render_pass.set_pipeline(&self.sun_pipeline);
             render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.sun_vertex_buffer.slice(..));
@@ -1360,8 +1402,7 @@ impl State {
             let bg_color = [0.2, 0.2, 0.2];
             let prog_color = [1.0 - progress, progress, 0.0];
 
-            let mut vertices = Vec::new();
-            let mut indices = Vec::new();
+            let mut vertices = Vec::with_capacity(8);
             let normal = [0.0, 0.0, 1.0];
 
             vertices.push(Vertex {
@@ -1392,7 +1433,6 @@ impl State {
                 uv: [0.0, 1.0],
                 tex_index: 0.0,
             });
-            indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
 
             let prog_width = bar_width * 2.0 * progress - bar_width;
             vertices.push(Vertex {
@@ -1423,22 +1463,36 @@ impl State {
                 uv: [0.0, 1.0],
                 tex_index: 0.0,
             });
-            indices.extend_from_slice(&[4, 5, 6, 4, 6, 7]);
 
-            let progress_vb = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Progress Bar VB"),
-                    contents: bytemuck::cast_slice(&vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-            let progress_ib = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Progress Bar IB"),
-                    contents: bytemuck::cast_slice(&indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
+            // Optimization: Reuse buffers if they exist, otherwise create them
+            let indices: [u32; 12] = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
+
+            if self.progress_bar_vertex_buffer.is_none() {
+                self.progress_bar_vertex_buffer = Some(self.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("Progress Bar VB"),
+                        contents: bytemuck::cast_slice(&vertices),
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    },
+                ));
+                self.progress_bar_index_buffer = Some(self.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("Progress Bar IB"),
+                        contents: bytemuck::cast_slice(&indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    },
+                ));
+            } else {
+                // Update existing buffer with new vertex data
+                self.queue.write_buffer(
+                    self.progress_bar_vertex_buffer.as_ref().unwrap(),
+                    0,
+                    bytemuck::cast_slice(&vertices),
+                );
+            }
+
+            let progress_vb = self.progress_bar_vertex_buffer.as_ref().unwrap();
+            let progress_ib = self.progress_bar_index_buffer.as_ref().unwrap();
 
             let mut progress_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Progress Bar Pass"),
@@ -1459,7 +1513,19 @@ impl State {
             progress_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             progress_pass.set_vertex_buffer(0, progress_vb.slice(..));
             progress_pass.set_index_buffer(progress_ib.slice(..), wgpu::IndexFormat::Uint32);
-            progress_pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+            progress_pass.draw_indexed(0..12, 0, 0..1);
+        }
+
+        // Render menu overlay if in menu state
+        if self.game_state == GameState::Menu {
+            self.render_menu(&mut encoder, &view);
+        } else {
+            // Render other players
+            self.render_remote_players(
+                &view_proj,
+                self.config.width as f32,
+                self.config.height as f32,
+            );
         }
 
         {
@@ -1494,6 +1560,233 @@ impl State {
         Ok(())
     }
 
+    /// Render the multiplayer menu overlay
+    fn render_menu(&mut self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
+        let width = self.config.width as f32;
+        let height = self.config.height as f32;
+
+        // Title
+        self.glyph_brush.queue(Section {
+            screen_position: (width / 2.0, height * 0.15),
+            text: vec![
+                Text::new("MULTIPLAYER")
+                    .with_color([1.0, 1.0, 1.0, 1.0])
+                    .with_scale(48.0),
+            ],
+            layout: wgpu_glyph::Layout::default().h_align(wgpu_glyph::HorizontalAlign::Center),
+            ..Section::default()
+        });
+
+        // Instructions
+        self.glyph_brush.queue(Section {
+            screen_position: (width / 2.0, height * 0.25),
+            text: vec![
+                Text::new(
+                    "Click a field to edit, Tab to switch, Enter to connect, Esc to play solo",
+                )
+                .with_color([0.8, 0.8, 0.8, 1.0])
+                .with_scale(18.0),
+            ],
+            layout: wgpu_glyph::Layout::default().h_align(wgpu_glyph::HorizontalAlign::Center),
+            ..Section::default()
+        });
+
+        // Server address label
+        let addr_selected = self.menu_state.selected_field == MenuField::ServerAddress;
+        let addr_color = if addr_selected {
+            [0.3, 1.0, 0.3, 1.0]
+        } else {
+            [0.7, 0.7, 0.7, 1.0]
+        };
+
+        self.glyph_brush.queue(Section {
+            screen_position: (width * 0.3, height * 0.4),
+            text: vec![
+                Text::new("Server Address:")
+                    .with_color(addr_color)
+                    .with_scale(24.0),
+            ],
+            ..Section::default()
+        });
+
+        // Server address input
+        let addr_text = if addr_selected {
+            format!("{}|", self.menu_state.server_address)
+        } else {
+            self.menu_state.server_address.clone()
+        };
+        let addr_box_color = if addr_selected {
+            [0.15, 0.15, 0.15, 1.0]
+        } else {
+            [0.1, 0.1, 0.1, 1.0]
+        };
+
+        self.glyph_brush.queue(Section {
+            screen_position: (width * 0.5, height * 0.4),
+            text: vec![
+                Text::new(&addr_text)
+                    .with_color([1.0, 1.0, 1.0, 1.0])
+                    .with_scale(24.0),
+            ],
+            ..Section::default()
+        });
+
+        // Username label
+        let user_selected = self.menu_state.selected_field == MenuField::Username;
+        let user_color = if user_selected {
+            [0.3, 1.0, 0.3, 1.0]
+        } else {
+            [0.7, 0.7, 0.7, 1.0]
+        };
+
+        self.glyph_brush.queue(Section {
+            screen_position: (width * 0.3, height * 0.5),
+            text: vec![
+                Text::new("Username:")
+                    .with_color(user_color)
+                    .with_scale(24.0),
+            ],
+            ..Section::default()
+        });
+
+        // Username input
+        let user_text = if user_selected {
+            format!("{}|", self.menu_state.username)
+        } else {
+            self.menu_state.username.clone()
+        };
+
+        self.glyph_brush.queue(Section {
+            screen_position: (width * 0.5, height * 0.5),
+            text: vec![
+                Text::new(&user_text)
+                    .with_color([1.0, 1.0, 1.0, 1.0])
+                    .with_scale(24.0),
+            ],
+            ..Section::default()
+        });
+
+        // Connect button hint
+        self.glyph_brush.queue(Section {
+            screen_position: (width / 2.0, height * 0.65),
+            text: vec![
+                Text::new("[ENTER] Connect to Server")
+                    .with_color([0.5, 0.8, 1.0, 1.0])
+                    .with_scale(28.0),
+            ],
+            layout: wgpu_glyph::Layout::default().h_align(wgpu_glyph::HorizontalAlign::Center),
+            ..Section::default()
+        });
+
+        // Solo play hint
+        self.glyph_brush.queue(Section {
+            screen_position: (width / 2.0, height * 0.72),
+            text: vec![
+                Text::new("[ESC] Play Singleplayer")
+                    .with_color([0.7, 0.7, 0.5, 1.0])
+                    .with_scale(22.0),
+            ],
+            layout: wgpu_glyph::Layout::default().h_align(wgpu_glyph::HorizontalAlign::Center),
+            ..Section::default()
+        });
+
+        // Error/status message
+        if let Some(ref err) = self.menu_state.error_message {
+            self.glyph_brush.queue(Section {
+                screen_position: (width / 2.0, height * 0.82),
+                text: vec![
+                    Text::new(err)
+                        .with_color([1.0, 0.3, 0.3, 1.0])
+                        .with_scale(20.0),
+                ],
+                layout: wgpu_glyph::Layout::default().h_align(wgpu_glyph::HorizontalAlign::Center),
+                ..Section::default()
+            });
+        } else if let Some(ref status) = self.menu_state.status_message {
+            self.glyph_brush.queue(Section {
+                screen_position: (width / 2.0, height * 0.82),
+                text: vec![
+                    Text::new(status)
+                        .with_color([0.5, 1.0, 0.5, 1.0])
+                        .with_scale(20.0),
+                ],
+                layout: wgpu_glyph::Layout::default().h_align(wgpu_glyph::HorizontalAlign::Center),
+                ..Section::default()
+            });
+        }
+    }
+
+    fn connect_to_server(&mut self) {
+        connect_to_server(
+            &mut self.menu_state,
+            &mut self.game_state,
+            &self.network_runtime,
+            &mut self.network_rx,
+            &mut self.network_tx,
+        );
+    }
+
+    fn update_network(&mut self) {
+        update_network(
+            &mut self.my_player_id,
+            &self.camera.position,
+            self.camera.yaw,
+            self.camera.pitch,
+            &mut self.last_position_send,
+            &self.network_tx,
+            &mut self.network_rx,
+            &mut self.remote_players,
+            &mut self.game_state,
+            &mut self.mouse_captured,
+            &self.window,
+        );
+    }
+    fn render_remote_players(&mut self, view_proj: &cgmath::Matrix4<f32>, width: f32, height: f32) {
+        // Build combined mesh for all remote players
+        if !self.remote_players.is_empty() {
+            let mut all_vertices = Vec::new();
+            let mut all_indices = Vec::new();
+
+            for (_id, player) in &self.remote_players {
+                let (vertices, indices) =
+                    build_player_model(player.x, player.y, player.z, player.yaw);
+                let base_idx = all_vertices.len() as u32;
+                all_vertices.extend(vertices);
+                all_indices.extend(indices.iter().map(|i| i + base_idx));
+            }
+
+            self.player_model_num_indices = all_indices.len() as u32;
+
+            if !all_vertices.is_empty() {
+                self.player_model_vertex_buffer = Some(self.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("Player Model Vertex Buffer"),
+                        contents: bytemuck::cast_slice(&all_vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    },
+                ));
+                self.player_model_index_buffer = Some(self.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("Player Model Index Buffer"),
+                        contents: bytemuck::cast_slice(&all_indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    },
+                ));
+            }
+        } else {
+            self.player_model_num_indices = 0;
+        }
+
+        // Also render player name labels
+        queue_remote_players_labels(
+            &mut self.glyph_brush,
+            &self.remote_players,
+            view_proj,
+            width,
+            height,
+        );
+    }
+
     fn handle_mouse_input(&mut self, button: MouseButton, pressed: bool) {
         match button {
             MouseButton::Left => self.input.left_mouse = pressed,
@@ -1514,8 +1807,8 @@ impl State {
     }
 
     fn mark_chunk_dirty(&mut self, x: i32, y: i32, z: i32) {
-        let cx = x / CHUNK_SIZE;
-        let cz = z / CHUNK_SIZE;
+        let cx = (x as f32 / CHUNK_SIZE as f32).floor() as i32;
+        let cz = (z as f32 / CHUNK_SIZE as f32).floor() as i32;
         let sy = y / SUBCHUNK_HEIGHT;
 
         if let Some(chunk) = self.world.chunks.get_mut(&(cx, cz)) {
@@ -1570,9 +1863,122 @@ impl State {
 }
 
 fn main() {
+    // Parse CLI arguments
+    let args = Args::parse();
+
+    // If server mode, run server and return (headless)
+    if args.server {
+        let addr = format!("0.0.0.0:{}", args.port);
+        println!("====================================================");
+        println!("Starting Headless Dedicated Server on {}...", addr);
+        println!("Note: This is a console-only server. No game window will appear.");
+        println!("To play the game, run the application without --server.");
+        println!("Press Ctrl+C to stop the server.");
+        println!("====================================================");
+
+        use std::io::Write;
+        std::io::stdout().flush().unwrap();
+
+        let rt = tokio::runtime::Runtime::new()
+            .expect("Failed to create tokio runtime. Check if you have enough system resources.");
+        rt.block_on(async {
+            match TcpServer::bind(&addr).await {
+                Ok(server_inst) => {
+                    let server = Arc::new(server_inst);
+                    println!("Server is now listening on {}", addr);
+                    println!("Waiting for connections...");
+                    std::io::stdout().flush().unwrap();
+
+                    // Accept connections in a loop
+                    loop {
+                        match server.accept().await {
+                            Ok((id, conn)) => {
+                                println!("Client {} connected from {}", id, conn.addr());
+                                let server_clone = server.clone();
+
+                                // Handle client in separate task
+                                tokio::spawn(async move {
+                                    loop {
+                                        match conn.recv().await {
+                                            Ok(mut packet) => {
+                                                // Ensure player_id matches the one assigned by server for all relevant packets
+                                                match packet {
+                                                    Packet::Connect {
+                                                        ref mut player_id, ..
+                                                    } => {
+                                                        *player_id = id;
+                                                        // Send acknowledgement back to client
+                                                        let ack = Packet::ConnectAck {
+                                                            success: true,
+                                                            player_id: id,
+                                                        };
+                                                        let _ = conn.send(&ack).await;
+                                                    }
+                                                    Packet::Position {
+                                                        ref mut player_id, ..
+                                                    } => {
+                                                        *player_id = id;
+                                                    }
+                                                    Packet::Rotation {
+                                                        ref mut player_id, ..
+                                                    } => {
+                                                        *player_id = id;
+                                                    }
+                                                    Packet::Chat {
+                                                        ref mut player_id, ..
+                                                    } => {
+                                                        *player_id = id;
+                                                    }
+                                                    Packet::Disconnect {
+                                                        ref mut player_id,
+                                                        ..
+                                                    } => {
+                                                        *player_id = id;
+                                                    }
+                                                    _ => {}
+                                                }
+
+                                                // Broadcast to everyone else
+                                                let _ = server_clone
+                                                    .broadcast_except(&packet, id)
+                                                    .await;
+                                            }
+                                            Err(_) => {
+                                                println!("Client {} disconnected", id);
+
+                                                // Inform others about disconnection
+                                                let disconnect_packet =
+                                                    Packet::Disconnect { player_id: id };
+                                                let _ = server_clone
+                                                    .broadcast_except(&disconnect_packet, id)
+                                                    .await;
+
+                                                // Clean up connection from server
+                                                server_clone.remove_client(id).await;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                eprintln!("Accept error: {}", e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to start server: {}", e);
+                }
+            }
+        });
+        return;
+    }
+
+    // Client mode
     let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new()
-        .with_title("🎮 Mini Minecraft 256x256 | Loading...")
+        .with_title("Mini Minecraft 256x256 | Loading...")
         .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
         .build(&event_loop)
         .unwrap();
@@ -1623,90 +2029,157 @@ fn main() {
                                 KeyEvent {
                                     physical_key: PhysicalKey::Code(key),
                                     state: key_state,
+                                    text,
                                     ..
                                 },
                             ..
                         },
                     ..
                 } => {
+                    state.last_input_time = Instant::now();
                     let pressed = key_state == ElementState::Pressed;
-                    match key {
-                        KeyCode::KeyW => state.input.forward = pressed,
-                        KeyCode::KeyS => state.input.backward = pressed,
-                        KeyCode::KeyA => state.input.left = pressed,
-                        KeyCode::KeyD => state.input.right = pressed,
-                        KeyCode::Space => state.input.jump = pressed,
-                        KeyCode::ShiftLeft => state.input.sprint = pressed,
-                        KeyCode::Escape if pressed => {
-                            state.mouse_captured = false;
-                            let _ = state.window.set_cursor_grab(CursorGrabMode::None);
-                            state.window.set_cursor_visible(true);
-                        }
-                        KeyCode::F11 if pressed => {
-                            if state.window.fullscreen().is_some() {
-                                state.window.set_fullscreen(None);
-                            } else {
-                                state.window.set_fullscreen(Some(
-                                    winit::window::Fullscreen::Borderless(None),
-                                ));
+
+                    // Handle text input for menu
+                    if state.game_state == GameState::Menu && pressed {
+                        if let Some(ref txt) = text {
+                            for ch in txt.chars() {
+                                state.menu_state.handle_char(ch);
                             }
                         }
-                        KeyCode::F5 if pressed => {
-                            let saved = SavedWorld::from_world(
-                                &state.world.chunks,
-                                state.world.seed,
-                                (
-                                    state.camera.position.x,
-                                    state.camera.position.y,
-                                    state.camera.position.z,
-                                ),
-                                (state.camera.yaw, state.camera.pitch),
-                            );
-                            match save_world(DEFAULT_WORLD_FILE, &saved) {
-                                Ok(_) => println!("World saved to {}", DEFAULT_WORLD_FILE),
-                                Err(e) => println!("Error saving world: {}", e),
+                    }
+
+                    // Handle based on game state
+                    if state.game_state == GameState::Menu {
+                        // Menu mode - handle text input
+                        if pressed {
+                            match key {
+                                KeyCode::Tab => {
+                                    state.menu_state.next_field();
+                                }
+                                KeyCode::Enter => {
+                                    // Try to connect using menu data
+                                    state.connect_to_server();
+                                }
+                                KeyCode::Escape => {
+                                    // Play singleplayer - exit menu
+                                    state.game_state = GameState::Playing;
+                                }
+                                KeyCode::Backspace => {
+                                    state.menu_state.handle_backspace();
+                                }
+                                KeyCode::F11 => {
+                                    if state.window.fullscreen().is_some() {
+                                        state.window.set_fullscreen(None);
+                                    } else {
+                                        state.window.set_fullscreen(Some(
+                                            winit::window::Fullscreen::Borderless(None),
+                                        ));
+                                    }
+                                }
+                                _ => {}
                             }
                         }
-                        KeyCode::F9 if pressed => match load_world(DEFAULT_WORLD_FILE) {
-                            Ok(saved) => {
-                                println!("Regenerating world with seed {}...", saved.seed);
-                                state.world = World::new_with_seed(saved.seed);
-                                state.camera.position.x = saved.player_x;
-                                state.camera.position.y = saved.player_y;
-                                state.camera.position.z = saved.player_z;
-                                state.camera.yaw = saved.player_yaw;
-                                state.camera.pitch = saved.player_pitch;
-
-                                for chunk_data in &saved.chunks {
-                                    for block in &chunk_data.blocks {
-                                        state.world.set_block(
-                                            block.x,
-                                            block.y,
-                                            block.z,
-                                            block.block_type,
-                                        );
-                                    }
-                                    let cx = chunk_data.cx;
-                                    let cz = chunk_data.cz;
-                                    if let Some(chunk) = state.world.chunks.get_mut(&(cx, cz)) {
-                                        chunk.player_modified = true;
-                                    }
+                    } else {
+                        // Playing mode - normal game controls
+                        match key {
+                            KeyCode::KeyW => state.input.forward = pressed,
+                            KeyCode::KeyS => state.input.backward = pressed,
+                            KeyCode::KeyA => state.input.left = pressed,
+                            KeyCode::KeyD => state.input.right = pressed,
+                            KeyCode::Space => state.input.jump = pressed,
+                            KeyCode::ShiftLeft => state.input.sprint = pressed,
+                            KeyCode::Escape if pressed => {
+                                // Return to menu OR release mouse
+                                if state.mouse_captured {
+                                    state.mouse_captured = false;
+                                    let _ = state.window.set_cursor_grab(CursorGrabMode::None);
+                                    state.window.set_cursor_visible(true);
+                                } else {
+                                    state.game_state = GameState::Menu;
                                 }
-
-                                for chunk in state.world.chunks.values_mut() {
-                                    for subchunk in &mut chunk.subchunks {
-                                        subchunk.mesh_dirty = true;
-                                    }
+                            }
+                            KeyCode::F11 if pressed => {
+                                if state.window.fullscreen().is_some() {
+                                    state.window.set_fullscreen(None);
+                                } else {
+                                    state.window.set_fullscreen(Some(
+                                        winit::window::Fullscreen::Borderless(None),
+                                    ));
                                 }
-
-                                println!(
-                                    "✅ Świat wczytany z {} (seed: {})",
-                                    DEFAULT_WORLD_FILE, saved.seed
+                            }
+                            KeyCode::F5 if pressed => {
+                                let saved = SavedWorld::from_world(
+                                    &state.world.chunks,
+                                    state.world.seed,
+                                    (
+                                        state.camera.position.x,
+                                        state.camera.position.y,
+                                        state.camera.position.z,
+                                    ),
+                                    (state.camera.yaw, state.camera.pitch),
                                 );
+                                match save_world(DEFAULT_WORLD_FILE, &saved) {
+                                    Ok(_) => println!("World saved to {}", DEFAULT_WORLD_FILE),
+                                    Err(e) => println!("Error saving world: {}", e),
+                                }
                             }
-                            Err(e) => println!("❌ Błąd wczytywania: {}", e),
-                        },
-                        _ => {}
+                            KeyCode::F9 if pressed => match load_world(DEFAULT_WORLD_FILE) {
+                                Ok(saved) => {
+                                    println!("Regenerating world with seed {}...", saved.seed);
+                                    state.world = World::new_with_seed(saved.seed);
+                                    state.camera.position.x = saved.player_x;
+                                    state.camera.position.y = saved.player_y;
+                                    state.camera.position.z = saved.player_z;
+                                    state.camera.yaw = saved.player_yaw;
+                                    state.camera.pitch = saved.player_pitch;
+
+                                    for chunk_data in &saved.chunks {
+                                        let cx = chunk_data.cx;
+                                        let cz = chunk_data.cz;
+
+                                        for (&sy, block_data) in &chunk_data.subchunks {
+                                            if let Some(chunk) =
+                                                state.world.chunks.get_mut(&(cx, cz))
+                                            {
+                                                if (sy as usize) < chunk.subchunks.len() {
+                                                    let subchunk =
+                                                        &mut chunk.subchunks[sy as usize];
+                                                    let mut n = 0;
+                                                    for lx in 0..CHUNK_SIZE as usize {
+                                                        for ly in 0..SUBCHUNK_HEIGHT as usize {
+                                                            for lz in 0..CHUNK_SIZE as usize {
+                                                                if n < block_data.len() {
+                                                                    subchunk.blocks[lx][ly][lz] =
+                                                                        block_data[n];
+                                                                    n += 1;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    subchunk.is_empty = false;
+                                                    subchunk.mesh_dirty = true;
+                                                }
+                                                chunk.player_modified = true;
+                                            }
+                                        }
+                                    }
+
+                                    // Mark all neighbor chunks as dirty to ensure geometry joins correctly
+                                    for chunk in state.world.chunks.values_mut() {
+                                        for subchunk in &mut chunk.subchunks {
+                                            subchunk.mesh_dirty = true;
+                                        }
+                                    }
+
+                                    println!(
+                                        "World loaded from {} (seed: {})",
+                                        DEFAULT_WORLD_FILE, saved.seed
+                                    );
+                                }
+                                Err(e) => println!("Error loading: {}", e),
+                            },
+                            _ => {}
+                        }
                     }
                 }
                 Event::WindowEvent {
@@ -1718,6 +2191,7 @@ fn main() {
                         },
                     ..
                 } => {
+                    state.last_input_time = Instant::now();
                     let pressed = btn_state == ElementState::Pressed;
 
                     if pressed && !state.mouse_captured {
@@ -1739,6 +2213,7 @@ fn main() {
                     event: DeviceEvent::MouseMotion { delta },
                     ..
                 } => {
+                    state.last_input_time = Instant::now();
                     if state.mouse_captured {
                         let sensitivity = 0.002;
                         state.camera.yaw += delta.0 as f32 * sensitivity;
@@ -1750,6 +2225,14 @@ fn main() {
                     }
                 }
                 Event::AboutToWait => {
+                    let is_idle = state.last_input_time.elapsed().as_secs() >= 30;
+                    if is_idle {
+                        // Limit to ~30 FPS (33.3ms per frame)
+                        let next_frame = Instant::now() + std::time::Duration::from_millis(33);
+                        elwt.set_control_flow(ControlFlow::WaitUntil(next_frame));
+                    } else {
+                        elwt.set_control_flow(ControlFlow::Poll);
+                    }
                     state.window.request_redraw();
                 }
                 Event::WindowEvent {

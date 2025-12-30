@@ -1,4 +1,4 @@
-use noise::{NoiseFn, Perlin};
+use noise::{NoiseFn, Simplex};
 use std::collections::HashMap;
 
 use crate::biome::Biome;
@@ -10,55 +10,56 @@ use crate::vertex::Vertex;
 
 pub struct World {
     pub chunks: HashMap<(i32, i32), Chunk>,
-    perlin_continents: Perlin,
-    perlin_terrain: Perlin,
-    perlin_detail: Perlin,
-    perlin_temperature: Perlin,
-    perlin_moisture: Perlin,
-    perlin_river: Perlin,
-    perlin_lake: Perlin,
-    perlin_trees: Perlin,
-    perlin_island: Perlin,
-    perlin_cave1: Perlin,
-    perlin_cave2: Perlin,
-    perlin_ore: Perlin,
-    perlin_erosion: Perlin,
+    simplex_continents: Simplex,
+    simplex_terrain: Simplex,
+    simplex_detail: Simplex,
+    simplex_temperature: Simplex,
+    simplex_moisture: Simplex,
+    simplex_river: Simplex,
+    simplex_lake: Simplex,
+    simplex_trees: Simplex,
+    simplex_island: Simplex,
+    simplex_cave1: Simplex,
+    simplex_cave2: Simplex,
+    simplex_ore: Simplex,
+    simplex_erosion: Simplex,
     pub seed: u32,
 }
 
 impl World {
     pub fn new() -> Self {
-        Self::new_with_seed(2147)
+        Self::new_with_seed(2137) // TODO: Randomize seed, for now it's fixed, easier to debug
     }
 
     pub fn new_with_seed(seed: u32) -> Self {
         let mut world = World {
             chunks: HashMap::new(),
-            perlin_continents: Perlin::new(seed),
-            perlin_terrain: Perlin::new(seed.wrapping_add(1)),
-            perlin_detail: Perlin::new(seed.wrapping_add(2)),
-            perlin_temperature: Perlin::new(seed.wrapping_add(3)),
-            perlin_moisture: Perlin::new(seed.wrapping_add(4)),
-            perlin_river: Perlin::new(seed.wrapping_add(5)),
-            perlin_lake: Perlin::new(seed.wrapping_add(6)),
-            perlin_trees: Perlin::new(seed.wrapping_add(7)),
-            perlin_island: Perlin::new(seed.wrapping_add(8)),
-            perlin_cave1: Perlin::new(seed.wrapping_add(9)),
-            perlin_cave2: Perlin::new(seed.wrapping_add(10)),
-            perlin_ore: Perlin::new(seed.wrapping_add(11)),
-            perlin_erosion: Perlin::new(seed.wrapping_add(12)),
+            simplex_continents: Simplex::new(seed),
+            simplex_terrain: Simplex::new(seed.wrapping_add(1)),
+            simplex_detail: Simplex::new(seed.wrapping_add(2)),
+            simplex_temperature: Simplex::new(seed.wrapping_add(3)),
+            simplex_moisture: Simplex::new(seed.wrapping_add(4)),
+            simplex_river: Simplex::new(seed.wrapping_add(5)),
+            simplex_lake: Simplex::new(seed.wrapping_add(6)),
+            simplex_trees: Simplex::new(seed.wrapping_add(7)),
+            simplex_island: Simplex::new(seed.wrapping_add(8)),
+            simplex_cave1: Simplex::new(seed.wrapping_add(9)),
+            simplex_cave2: Simplex::new(seed.wrapping_add(10)),
+            simplex_ore: Simplex::new(seed.wrapping_add(11)),
+            simplex_erosion: Simplex::new(seed.wrapping_add(12)),
             seed,
         };
 
         let spawn_cx = 0;
         let spawn_cz = 0;
-        for cx in (spawn_cx - GENERATION_DISTANCE)..=(spawn_cx + GENERATION_DISTANCE) {
-            for cz in (spawn_cz - GENERATION_DISTANCE)..=(spawn_cz + GENERATION_DISTANCE) {
+        // Generate only a smaller initial radius for faster startup
+        // More chunks will be generated as the player moves
+        let initial_radius = 6;
+        for cx in (spawn_cx - initial_radius)..=(spawn_cx + initial_radius) {
+            for cz in (spawn_cz - initial_radius)..=(spawn_cz + initial_radius) {
                 world.ensure_chunk_generated(cx, cz);
             }
         }
-
-        world.print_nearby_cave_entrances(0, 0, 512);
 
         world
     }
@@ -121,19 +122,19 @@ impl World {
         let scale_continent = 0.002;
         let scale_temp = 0.008;
         let scale_moist = 0.01;
-        let scale_river = 0.03;
+        let scale_river = 0.06;
         let scale_lake = 0.025;
 
         let continent = self
-            .perlin_continents
+            .simplex_continents
             .get([x as f64 * scale_continent, z as f64 * scale_continent]);
         let river_noise = self
-            .perlin_river
+            .simplex_river
             .get([x as f64 * scale_river, z as f64 * scale_river]);
         let river_value = 1.0 - river_noise.abs() * 1.5;
 
         let lake_noise = self
-            .perlin_lake
+            .simplex_lake
             .get([x as f64 * scale_lake, z as f64 * scale_lake]);
 
         if river_value > 0.85 && continent > -0.3 {
@@ -147,7 +148,7 @@ impl World {
         if continent < -0.35 {
             let island_scale = 0.05;
             let island_noise = self
-                .perlin_island
+                .simplex_island
                 .get([x as f64 * island_scale, z as f64 * island_scale]);
             if island_noise > 0.65 {
                 return Biome::Island;
@@ -160,10 +161,10 @@ impl World {
         }
 
         let temp = self
-            .perlin_temperature
+            .simplex_temperature
             .get([x as f64 * scale_temp, z as f64 * scale_temp]);
         let moist = self
-            .perlin_moisture
+            .simplex_moisture
             .get([x as f64 * scale_moist, z as f64 * scale_moist]);
 
         if temp < -0.3 {
@@ -181,7 +182,7 @@ impl World {
                 Biome::Forest
             } else {
                 let mountain_noise = self
-                    .perlin_terrain
+                    .simplex_terrain
                     .get([x as f64 * 0.005, z as f64 * 0.005]);
                 if mountain_noise > 0.4 {
                     Biome::Mountains
@@ -194,7 +195,7 @@ impl World {
 
     fn sample_fbm(
         &self,
-        perlin: &Perlin,
+        noise: &Simplex,
         x: f64,
         z: f64,
         octaves: u32,
@@ -208,7 +209,7 @@ impl World {
         let mut max_value = 0.0;
 
         for _ in 0..octaves {
-            total += perlin.get([x * frequency, z * frequency]) * amplitude;
+            total += noise.get([x * frequency, z * frequency]) * amplitude;
             max_value += amplitude;
             amplitude *= persistence;
             frequency *= lacunarity;
@@ -218,28 +219,47 @@ impl World {
     }
 
     pub fn get_terrain_height(&self, x: i32, z: i32) -> i32 {
+        let blend_radius = 2;
+        let mut total_height = 0.0;
+        let mut weights = 0.0;
+
+        for dx in -blend_radius..=blend_radius {
+            for dz in -blend_radius..=blend_radius {
+                let wx = x + dx;
+                let wz = z + dz;
+                let dist_sq = (dx * dx + dz * dz) as f64;
+                let weight = 1.0 / (1.0 + dist_sq);
+
+                let height = self.calculate_base_height_at(wx, wz);
+                total_height += height * weight;
+                weights += weight;
+            }
+        }
+
+        let base_height = total_height / weights;
+        (base_height as i32).clamp(1, WORLD_HEIGHT - 20)
+    }
+
+    fn calculate_base_height_at(&self, x: i32, z: i32) -> f64 {
         let biome = self.get_biome(x, z);
         let fx = x as f64;
         let fz = z as f64;
 
-        let continental = self.sample_fbm(&self.perlin_continents, fx, fz, 4, 0.5, 2.0, 0.001);
+        let continental = self.sample_fbm(&self.simplex_continents, fx, fz, 4, 0.5, 2.0, 0.001);
+        let terrain = self.sample_fbm(&self.simplex_terrain, fx, fz, 4, 0.5, 2.0, 0.008);
+        let detail = self.sample_fbm(&self.simplex_detail, fx, fz, 3, 0.4, 2.0, 0.015);
+        let erosion = self.sample_fbm(&self.simplex_erosion, fx, fz, 2, 0.5, 2.0, 0.005);
 
-        let terrain = self.sample_fbm(&self.perlin_terrain, fx, fz, 4, 0.5, 2.0, 0.008);
-
-        let detail = self.sample_fbm(&self.perlin_detail, fx, fz, 3, 0.4, 2.0, 0.015);
-
-        let erosion = self.sample_fbm(&self.perlin_erosion, fx, fz, 2, 0.5, 2.0, 0.005);
-
-        let base_height = match biome {
+        match biome {
             Biome::Ocean => {
                 let depth = (continental + 1.0) * 0.5 * 15.0 + 35.0;
                 depth + detail * 3.0
             }
-            Biome::River => (SEA_LEVEL - 3) as f64 + detail * 1.5,
+            Biome::River => (SEA_LEVEL - 3) as f64 + detail * 2.0,
             Biome::Lake => (SEA_LEVEL - 4) as f64 + detail * 2.0,
             Biome::Beach => SEA_LEVEL as f64 + terrain * 2.0 + detail * 1.0,
             Biome::Island => {
-                let island_noise = self.perlin_island.get([fx * 0.05, fz * 0.05]);
+                let island_noise = self.simplex_island.get([fx * 0.05, fz * 0.05]);
                 let island_height = (island_noise + 1.0) * 0.5 * 25.0;
                 (SEA_LEVEL as f64 + island_height + detail * 3.0).max(SEA_LEVEL as f64 - 5.0)
             }
@@ -253,7 +273,7 @@ impl World {
                 base + terrain * 8.0 + detail * 3.0
             }
             Biome::Desert => {
-                let dune_noise = self.perlin_detail.get([fx * 0.02, fz * 0.02]);
+                let dune_noise = self.simplex_detail.get([fx * 0.02, fz * 0.02]);
                 let dune = (dune_noise + 1.0) * 0.5 * 8.0;
                 let base = 65.0;
                 base + terrain * 5.0 + dune + detail * 2.0
@@ -264,7 +284,7 @@ impl World {
             }
             Biome::Mountains => {
                 let peaks = self.sample_fbm(
-                    &self.perlin_terrain,
+                    &self.simplex_terrain,
                     fx + 1000.0,
                     fz + 1000.0,
                     3,
@@ -281,9 +301,7 @@ impl World {
                 let base = SEA_LEVEL as f64 + 1.0;
                 base + terrain * 2.0 + detail * 1.0
             }
-        };
-
-        (base_height as i32).clamp(1, WORLD_HEIGHT - 20)
+        }
     }
 
     fn is_cave(&self, x: i32, y: i32, z: i32, surface_height: i32) -> bool {
@@ -304,9 +322,9 @@ impl World {
 
         let cave_scale = 0.05;
         let cave1 =
-            self.perlin_cave1
+            self.simplex_cave1
                 .get([fx * cave_scale, fy * cave_scale * 0.5, fz * cave_scale]);
-        let cave2 = self.perlin_cave2.get([
+        let cave2 = self.simplex_cave2.get([
             fx * cave_scale * 0.7,
             fy * cave_scale * 0.4,
             fz * cave_scale * 0.7,
@@ -315,12 +333,12 @@ impl World {
         let cheese_threshold = 0.7;
         let is_cheese_cave = cave1 > cheese_threshold && cave2 > cheese_threshold;
         let spaghetti_scale = 0.08;
-        let spag1 = self.perlin_cave1.get([
+        let spag1 = self.simplex_cave1.get([
             fx * spaghetti_scale + 500.0,
             fy * spaghetti_scale,
             fz * spaghetti_scale,
         ]);
-        let spag2 = self.perlin_cave2.get([
+        let spag2 = self.simplex_cave2.get([
             fx * spaghetti_scale + 500.0,
             fy * spaghetti_scale,
             fz * spaghetti_scale,
@@ -347,7 +365,7 @@ impl World {
         }
 
         let entrance_scale = 0.02;
-        let entrance_noise = self.perlin_cave1.get([
+        let entrance_noise = self.simplex_cave1.get([
             x as f64 * entrance_scale + 1000.0,
             z as f64 * entrance_scale + 1000.0,
         ]);
@@ -366,9 +384,9 @@ impl World {
 
             let cave_scale = 0.05;
             let cave1 =
-                self.perlin_cave1
+                self.simplex_cave1
                     .get([fx * cave_scale, fy * cave_scale * 0.5, fz * cave_scale]);
-            let cave2 = self.perlin_cave2.get([
+            let cave2 = self.simplex_cave2.get([
                 fx * cave_scale * 0.7,
                 fy * cave_scale * 0.4,
                 fz * cave_scale * 0.7,
@@ -385,7 +403,7 @@ impl World {
     fn get_ore_at(&self, x: i32, y: i32, z: i32) -> Option<BlockType> {
         let hash = self.position_hash_3d(x, y, z);
         let ore_noise = self
-            .perlin_ore
+            .simplex_ore
             .get([x as f64 * 0.1, y as f64 * 0.1, z as f64 * 0.1]);
 
         if ore_noise < 0.3 {
@@ -411,6 +429,31 @@ impl World {
         None
     }
 
+    fn get_3d_density(&self, x: i32, y: i32, z: i32, biome: Biome, surface_height: i32) -> f64 {
+        let fx = x as f64;
+        let fy = y as f64;
+        let fz = z as f64;
+
+        let vertical_gradient = (surface_height as f64 - fy) / 8.0;
+
+        let density_noise = match biome {
+            Biome::Mountains => {
+                let scale = 0.02;
+                self.sample_fbm(&self.simplex_terrain, fx, fz, 3, 0.5, 2.0, scale) * 0.5
+                    + self.simplex_detail.get([fx * 0.04, fy * 0.04, fz * 0.04]) * 0.5
+            }
+            Biome::Island => {
+                let scale = 0.03;
+                self.simplex_terrain
+                    .get([fx * scale, fy * scale, fz * scale])
+                    * 0.4
+            }
+            _ => 0.0,
+        };
+
+        vertical_gradient + density_noise
+    }
+
     fn position_hash_3d(&self, x: i32, y: i32, z: i32) -> u32 {
         let mut hash = self.seed;
         hash = hash.wrapping_add(x as u32).wrapping_mul(73856093);
@@ -429,17 +472,37 @@ impl World {
                 let world_x = base_x + lx;
                 let world_z = base_z + lz;
                 let biome = self.get_biome(world_x, world_z);
-                let height = self.get_terrain_height(world_x, world_z);
+                let surface_height = self.get_terrain_height(world_x, world_z);
 
-                for y in 0..WORLD_HEIGHT.min(height + 10) {
-                    let block = self.get_block_for_biome(biome, y, height, world_x, world_z);
-                    if block != BlockType::Air {
-                        chunk.set_block(lx, y, lz, block);
+                let max_y = if matches!(biome, Biome::Mountains | Biome::Island) {
+                    WORLD_HEIGHT - 20
+                } else {
+                    // Ensure we iterate up to at least SEA_LEVEL to generate water correctly
+                    (surface_height + 5).max(SEA_LEVEL)
+                };
+
+                for y in 0..max_y {
+                    let mut is_solid = false;
+                    if y < surface_height {
+                        is_solid = true;
                     }
-                }
 
-                if height < SEA_LEVEL {
-                    for y in height..SEA_LEVEL {
+                    if matches!(biome, Biome::Mountains | Biome::Island) && y >= surface_height - 8
+                    {
+                        let density =
+                            self.get_3d_density(world_x, y, world_z, biome, surface_height);
+                        if density > 0.0 {
+                            is_solid = true;
+                        }
+                    }
+
+                    if is_solid {
+                        let block =
+                            self.get_block_for_biome(biome, y, surface_height, world_x, world_z);
+                        if block != BlockType::Air {
+                            chunk.set_block(lx, y, lz, block);
+                        }
+                    } else if y >= surface_height && y < SEA_LEVEL {
                         if biome == Biome::Tundra && y == SEA_LEVEL - 1 {
                             chunk.set_block(lx, y, lz, BlockType::Ice);
                         } else {
@@ -503,6 +566,7 @@ impl World {
         }
 
         let depth_from_surface = surface_height - y;
+        let dirt_depth = 3 + (self.position_hash(world_x, world_z) % 3) as i32;
 
         match biome {
             Biome::Ocean | Biome::River | Biome::Lake => {
@@ -522,7 +586,7 @@ impl World {
                 } else if depth_from_surface > 0 {
                     BlockType::Sand
                 } else if y == surface_height - 1 {
-                    if biome == Biome::Island {
+                    if biome == Biome::Island && y > SEA_LEVEL {
                         BlockType::Grass
                     } else {
                         BlockType::Sand
@@ -543,7 +607,7 @@ impl World {
                 }
             }
             Biome::Tundra => {
-                if depth_from_surface > 6 {
+                if depth_from_surface > dirt_depth + 2 {
                     BlockType::Stone
                 } else if depth_from_surface > 1 {
                     BlockType::Dirt
@@ -554,8 +618,7 @@ impl World {
                 }
             }
             Biome::Mountains => {
-                if y > 120 {
-                    // Snow-capped peaks
+                if y > 140 {
                     if y == surface_height - 1 {
                         BlockType::Snow
                     } else if depth_from_surface > 0 {
@@ -563,20 +626,16 @@ impl World {
                     } else {
                         BlockType::Air
                     }
-                } else if y > 100 {
-                    // High altitude - mostly stone with some grass
+                } else if y > 110 {
                     if depth_from_surface > 2 {
                         BlockType::Stone
                     } else if y == surface_height - 1 {
                         BlockType::Grass
-                    } else if depth_from_surface > 0 {
-                        BlockType::Stone
                     } else {
-                        BlockType::Air
+                        BlockType::Stone
                     }
                 } else {
-                    // Lower mountains - normal dirt/grass
-                    if depth_from_surface > 5 {
+                    if depth_from_surface > dirt_depth {
                         BlockType::Stone
                     } else if depth_from_surface > 1 {
                         BlockType::Dirt
@@ -588,7 +647,7 @@ impl World {
                 }
             }
             Biome::Swamp => {
-                if depth_from_surface > 5 {
+                if depth_from_surface > dirt_depth {
                     BlockType::Stone
                 } else if depth_from_surface > 1 {
                     BlockType::Dirt
@@ -603,7 +662,7 @@ impl World {
                 }
             }
             Biome::Plains | Biome::Forest => {
-                if depth_from_surface > 5 {
+                if depth_from_surface > dirt_depth {
                     BlockType::Stone
                 } else if depth_from_surface > 1 {
                     BlockType::Dirt
@@ -734,7 +793,7 @@ impl World {
                 }
 
                 let tree_noise = self
-                    .perlin_trees
+                    .simplex_trees
                     .get([world_x as f64 * 0.3, world_z as f64 * 0.3]);
 
                 if biome.has_trees() && tree_noise > biome.tree_density() {
@@ -748,7 +807,7 @@ impl World {
 
                 if biome == Biome::Desert {
                     let cactus_noise = self
-                        .perlin_trees
+                        .simplex_trees
                         .get([world_x as f64 * 0.5 + 100.0, world_z as f64 * 0.5]);
                     if cactus_noise > 0.8 {
                         self.place_cactus_in_chunk(chunk, lx, height, lz);
@@ -981,16 +1040,11 @@ impl World {
         let base_z = chunk_z * CHUNK_SIZE;
 
         for lx in 0..CHUNK_SIZE {
-            for lz in 0..CHUNK_SIZE {
-                let world_x = base_x + lx;
-                let world_z = base_z + lz;
+            for ly in 0..SUBCHUNK_HEIGHT {
+                for lz in 0..CHUNK_SIZE {
+                    let y = base_y + ly;
+                    let block = self.get_block(base_x + lx, y, base_z + lz);
 
-                let biome = self.get_biome(world_x, world_z);
-
-                for ly in 0..SUBCHUNK_HEIGHT {
-                    let world_y = base_y + ly;
-
-                    let block = self.get_block(world_x, world_y, world_z);
                     if block == BlockType::Air {
                         continue;
                     }
@@ -1002,107 +1056,122 @@ impl World {
                         (&mut vertices, &mut indices)
                     };
 
-                    let fx = world_x as f32;
-                    let fy = world_y as f32;
-                    let fz = world_z as f32;
+                    let world_x = base_x + lx;
+                    let world_z = base_z + lz;
 
-                    let side_color = if block == BlockType::Grass {
-                        block.color()
-                    } else if block == BlockType::Leaves {
-                        biome.leaves_color()
-                    } else {
-                        block.color()
-                    };
-                    let top_color = if block == BlockType::Grass {
-                        biome.grass_color()
-                    } else {
-                        block.top_color()
-                    };
-                    let bottom_color = block.bottom_color();
+                    // Check all 6 neighbors
+                    let neighbors = [
+                        (world_x - 1, y, world_z),
+                        (world_x + 1, y, world_z),
+                        (world_x, y - 1, world_z),
+                        (world_x, y + 1, world_z),
+                        (world_x, y, world_z - 1),
+                        (world_x, y, world_z + 1),
+                    ];
 
-                    let neighbor_top = self.get_block(world_x, world_y + 1, world_z);
-                    if block.should_render_face_against(neighbor_top) {
-                        add_quad(
-                            target_verts,
-                            target_inds,
-                            [fx, fy + 1.0, fz],
-                            [fx, fy + 1.0, fz + 1.0],
-                            [fx + 1.0, fy + 1.0, fz + 1.0],
-                            [fx + 1.0, fy + 1.0, fz],
-                            [0.0, 1.0, 0.0],
-                            top_color,
-                            block.tex_top(),
-                        );
-                    }
-                    let neighbor_bottom = self.get_block(world_x, world_y - 1, world_z);
-                    if block.should_render_face_against(neighbor_bottom) {
-                        add_quad(
-                            target_verts,
-                            target_inds,
-                            [fx, fy, fz + 1.0],
-                            [fx, fy, fz],
-                            [fx + 1.0, fy, fz],
-                            [fx + 1.0, fy, fz + 1.0],
-                            [0.0, -1.0, 0.0],
-                            bottom_color,
-                            block.tex_bottom(),
-                        );
-                    }
-                    let neighbor_front = self.get_block(world_x, world_y, world_z + 1);
-                    if block.should_render_face_against(neighbor_front) {
-                        add_quad(
-                            target_verts,
-                            target_inds,
-                            [fx, fy, fz + 1.0],
-                            [fx + 1.0, fy, fz + 1.0],
-                            [fx + 1.0, fy + 1.0, fz + 1.0],
-                            [fx, fy + 1.0, fz + 1.0],
-                            [0.0, 0.0, 1.0],
-                            side_color,
-                            block.tex_side(),
-                        );
-                    }
-                    let neighbor_back = self.get_block(world_x, world_y, world_z - 1);
-                    if block.should_render_face_against(neighbor_back) {
-                        add_quad(
-                            target_verts,
-                            target_inds,
-                            [fx + 1.0, fy, fz],
-                            [fx, fy, fz],
-                            [fx, fy + 1.0, fz],
-                            [fx + 1.0, fy + 1.0, fz],
-                            [0.0, 0.0, -1.0],
-                            side_color,
-                            block.tex_side(),
-                        );
-                    }
-                    let neighbor_right = self.get_block(world_x + 1, world_y, world_z);
-                    if block.should_render_face_against(neighbor_right) {
-                        add_quad(
-                            target_verts,
-                            target_inds,
-                            [fx + 1.0, fy, fz + 1.0],
-                            [fx + 1.0, fy, fz],
-                            [fx + 1.0, fy + 1.0, fz],
-                            [fx + 1.0, fy + 1.0, fz + 1.0],
-                            [1.0, 0.0, 0.0],
-                            side_color,
-                            block.tex_side(),
-                        );
-                    }
-                    let neighbor_left = self.get_block(world_x - 1, world_y, world_z);
-                    if block.should_render_face_against(neighbor_left) {
-                        add_quad(
-                            target_verts,
-                            target_inds,
-                            [fx, fy, fz],
-                            [fx, fy, fz + 1.0],
-                            [fx, fy + 1.0, fz + 1.0],
-                            [fx, fy + 1.0, fz],
-                            [-1.0, 0.0, 0.0],
-                            side_color,
-                            block.tex_side(),
-                        );
+                    for (i, (nx, ny, nz)) in neighbors.iter().enumerate() {
+                        let neighbor_block = self.get_block(*nx, *ny, *nz);
+                        if block.should_render_face_against(neighbor_block) {
+                            let color = match i {
+                                2 => block.bottom_color(),
+                                3 => {
+                                    if block == BlockType::Grass {
+                                        self.get_biome(world_x, world_z).grass_color()
+                                    } else {
+                                        block.top_color()
+                                    }
+                                }
+                                _ => {
+                                    if block == BlockType::Grass {
+                                        block.color()
+                                    } else if block == BlockType::Leaves {
+                                        self.get_biome(world_x, world_z).leaves_color()
+                                    } else {
+                                        block.color()
+                                    }
+                                }
+                            };
+
+                            let tex_index = match i {
+                                2 => block.tex_bottom(),
+                                3 => block.tex_top(),
+                                _ => block.tex_side(),
+                            };
+
+                            let x = world_x as f32;
+                            let y_f = y as f32;
+                            let z = world_z as f32;
+
+                            match i {
+                                0 => add_quad(
+                                    target_verts,
+                                    target_inds,
+                                    [x, y_f, z],             // BL
+                                    [x, y_f, z + 1.0],       // BR
+                                    [x, y_f + 1.0, z + 1.0], // TR
+                                    [x, y_f + 1.0, z],       // TL
+                                    [-1.0, 0.0, 0.0],
+                                    color,
+                                    tex_index as f32,
+                                ),
+                                1 => add_quad(
+                                    target_verts,
+                                    target_inds,
+                                    [x + 1.0, y_f, z + 1.0],       // BL
+                                    [x + 1.0, y_f, z],             // BR
+                                    [x + 1.0, y_f + 1.0, z],       // TR
+                                    [x + 1.0, y_f + 1.0, z + 1.0], // TL
+                                    [1.0, 0.0, 0.0],
+                                    color,
+                                    tex_index as f32,
+                                ),
+                                2 => add_quad(
+                                    target_verts,
+                                    target_inds,
+                                    [x, y_f, z + 1.0],       // BL
+                                    [x, y_f, z],             // BR
+                                    [x + 1.0, y_f, z],       // TR
+                                    [x + 1.0, y_f, z + 1.0], // TL
+                                    [0.0, -1.0, 0.0],
+                                    color,
+                                    tex_index as f32,
+                                ),
+                                3 => add_quad(
+                                    target_verts,
+                                    target_inds,
+                                    [x, y_f + 1.0, z],             // BL
+                                    [x, y_f + 1.0, z + 1.0],       // BR
+                                    [x + 1.0, y_f + 1.0, z + 1.0], // TR
+                                    [x + 1.0, y_f + 1.0, z],       // TL
+                                    [0.0, 1.0, 0.0],
+                                    color,
+                                    tex_index as f32,
+                                ),
+                                4 => add_quad(
+                                    target_verts,
+                                    target_inds,
+                                    [x + 1.0, y_f, z],       // BL
+                                    [x, y_f, z],             // BR
+                                    [x, y_f + 1.0, z],       // TR
+                                    [x + 1.0, y_f + 1.0, z], // TL
+                                    [0.0, 0.0, -1.0],
+                                    color,
+                                    tex_index as f32,
+                                ),
+                                5 => add_quad(
+                                    target_verts,
+                                    target_inds,
+                                    [x, y_f, z + 1.0],             // BL
+                                    [x + 1.0, y_f, z + 1.0],       // BR
+                                    [x + 1.0, y_f + 1.0, z + 1.0], // TR
+                                    [x, y_f + 1.0, z + 1.0],       // TL
+                                    [0.0, 0.0, 1.0],
+                                    color,
+                                    tex_index as f32,
+                                ),
+                                _ => {}
+                            }
+                        }
                     }
                 }
             }

@@ -18,7 +18,7 @@ pub use chunk::{Chunk, SubChunk};
 pub use constants::*;
 pub use frustum::{AABB, extract_frustum_planes};
 pub use input::{DiggingState, InputState};
-pub use mesh::{add_quad, build_crosshair};
+pub use mesh::{add_quad, build_crosshair, build_player_model};
 pub use save::{DEFAULT_WORLD_FILE, SavedWorld, load_world, save_world};
 pub use texture::{generate_texture_atlas, load_texture_atlas_from_file};
 pub use uniforms::Uniforms;

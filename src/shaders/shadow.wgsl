@@ -1,5 +1,12 @@
+/// Shadow Mapping Shader
+/// 
+/// This shader is used during the shadow pass to generate a depth map 
+/// from the light's (sun's) perspective.
+
 struct Uniforms {
+    /// Standard view-projection matrix (not used in shadow pass)
     view_proj: mat4x4<f32>,
+    /// View-projection matrix from the sun's perspective
     sun_view_proj: mat4x4<f32>,
     camera_pos: vec3<f32>,
     time: f32,
@@ -18,6 +25,10 @@ struct VertexInput {
     @location(4) tex_index: f32,
 };
 
+/// Shadow Vertex Shader
+///
+/// Transforms the vertex position into the sun's coordinate space.
+/// No fragment shader is required as we only care about the depth buffer.
 @vertex
 fn vs_shadow(model: VertexInput) -> @builtin(position) vec4<f32> {
     return uniforms.sun_view_proj * vec4<f32>(model.position, 1.0);

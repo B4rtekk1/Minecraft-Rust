@@ -7,22 +7,11 @@ use std::path::Path;
 use crate::block::BlockType;
 use crate::constants::*;
 
-const MAGIC_HEADER: &[u8; 4] = b"R3DW";
-const VERSION: u32 = 1;
-
-#[derive(Serialize, Deserialize)]
-pub struct SavedBlock {
-    pub x: i32,
-    pub y: i32,
-    pub z: i32,
-    pub block_type: BlockType,
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct SavedChunk {
     pub cx: i32,
     pub cz: i32,
-    pub blocks: Vec<SavedBlock>,
+    pub subchunks: HashMap<u8, Vec<BlockType>>, // sy -> block data
 }
 
 #[derive(Serialize, Deserialize)]
@@ -50,29 +39,31 @@ impl SavedWorld {
                 continue;
             }
 
-            let mut blocks = Vec::new();
-            let base_x = cx * CHUNK_SIZE;
-            let base_z = cz * CHUNK_SIZE;
-
+            let mut saved_subchunks = HashMap::new();
             for (sy, subchunk) in chunk.subchunks.iter().enumerate() {
-                let base_y = sy as i32 * SUBCHUNK_HEIGHT;
+                // Check if subchunk is actually modified or just empty
+                if subchunk.is_empty {
+                    continue;
+                }
 
+                let mut blocks = Vec::with_capacity(
+                    CHUNK_SIZE as usize * SUBCHUNK_HEIGHT as usize * CHUNK_SIZE as usize,
+                );
                 for lx in 0..CHUNK_SIZE as usize {
                     for ly in 0..SUBCHUNK_HEIGHT as usize {
                         for lz in 0..CHUNK_SIZE as usize {
-                            let block = subchunk.blocks[lx][ly][lz];
-                            blocks.push(SavedBlock {
-                                x: base_x + lx as i32,
-                                y: base_y + ly as i32,
-                                z: base_z + lz as i32,
-                                block_type: block,
-                            });
+                            blocks.push(subchunk.blocks[lx][ly][lz]);
                         }
                     }
                 }
+                saved_subchunks.insert(sy as u8, blocks);
             }
 
-            saved_chunks.push(SavedChunk { cx, cz, blocks });
+            saved_chunks.push(SavedChunk {
+                cx,
+                cz,
+                subchunks: saved_subchunks,
+            });
         }
 
         SavedWorld {
@@ -88,54 +79,15 @@ impl SavedWorld {
 }
 
 pub fn save_world<P: AsRef<Path>>(path: P, world: &SavedWorld) -> Result<(), String> {
-    let file = File::create(path).map_err(|e| format!("Nie można utworzyć pliku: {}", e))?;
-    let mut writer = BufWriter::new(file);
-    writer.write_all(MAGIC_HEADER).map_err(|e| e.to_string())?;
-    writer
-        .write_all(&VERSION.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-
-    let data = bincode::serialize(world).map_err(|e| format!("Błąd serializacji: {}", e))?;
-
-    let size = data.len() as u64;
-    writer
-        .write_all(&size.to_le_bytes())
-        .map_err(|e| e.to_string())?;
-
-    writer.write_all(&data).map_err(|e| e.to_string())?;
-    writer.flush().map_err(|e| e.to_string())?;
-
-    Ok(())
+    let file = File::create(path).map_err(|e| format!("Could not create file: {}", e))?;
+    let writer = BufWriter::new(file);
+    bincode::serialize_into(writer, world).map_err(|e| format!("Serialization error: {}", e))
 }
 
 pub fn load_world<P: AsRef<Path>>(path: P) -> Result<SavedWorld, String> {
-    let file = File::open(path).map_err(|e| format!("Nie można otworzyć pliku: {}", e))?;
-    let mut reader = BufReader::new(file);
-    let mut magic = [0u8; 4];
-    reader.read_exact(&mut magic).map_err(|e| e.to_string())?;
-    if &magic != MAGIC_HEADER {
-        return Err("Nieprawidłowy format pliku".to_string());
-    }
-
-    let mut version_bytes = [0u8; 4];
-    reader
-        .read_exact(&mut version_bytes)
-        .map_err(|e| e.to_string())?;
-    let version = u32::from_le_bytes(version_bytes);
-    if version != VERSION {
-        return Err(format!("Nieobsługiwana wersja pliku: {}", version));
-    }
-
-    let mut size_bytes = [0u8; 8];
-    reader
-        .read_exact(&mut size_bytes)
-        .map_err(|e| e.to_string())?;
-    let size = u64::from_le_bytes(size_bytes) as usize;
-
-    let mut data = vec![0u8; size];
-    reader.read_exact(&mut data).map_err(|e| e.to_string())?;
-
-    bincode::deserialize(&data).map_err(|e| format!("Błąd deserializacji: {}", e))
+    let file = File::open(path).map_err(|e| format!("Could not open file: {}", e))?;
+    let reader = BufReader::new(file);
+    bincode::deserialize_from(reader).map_err(|e| format!("Deserialization error: {}", e))
 }
 
 pub const WORLD_FILE_EXTENSION: &str = "r3d";
