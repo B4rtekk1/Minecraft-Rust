@@ -1,12 +1,15 @@
-use std::sync::Arc;
 use std::time::Instant;
+use std::{num::NonZeroU32, sync::Arc};
 
 use rayon::prelude::*;
 
 use bytemuck;
 use cgmath::{InnerSpace, Matrix4, Rad, SquareMatrix};
+use glyphon::{
+    Attrs, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea,
+    TextAtlas, TextBounds, TextRenderer, Viewport,
+};
 use wgpu::util::DeviceExt;
-use wgpu_glyph::{GlyphBrush, GlyphBrushBuilder, Section, Text, ab_glyph};
 use winit::{
     dpi::PhysicalPosition,
     event::{DeviceEvent, ElementState, Event, KeyEvent, MouseButton, WindowEvent},
@@ -40,11 +43,13 @@ struct Args {
     port: u16,
 }
 
+use render3d::chunk_loader::ChunkLoader;
 use render3d::{
-    BlockType, CHUNK_SIZE, Camera, DEFAULT_WORLD_FILE, DiggingState, InputState, NUM_SUBCHUNKS,
-    RENDER_DISTANCE, SUBCHUNK_HEIGHT, SavedWorld, TEXTURE_SIZE, Uniforms, Vertex, World,
-    build_crosshair, build_player_model, extract_frustum_planes, generate_texture_atlas,
-    load_texture_atlas_from_file, load_world, save_world,
+    BlockType, CHUNK_SIZE, Camera, DEFAULT_WORLD_FILE, DiggingState, GENERATION_DISTANCE,
+    InputState, MAX_CHUNKS_PER_FRAME, NUM_SUBCHUNKS, RENDER_DISTANCE, SUBCHUNK_HEIGHT, SavedWorld,
+    TEXTURE_SIZE, Uniforms, Vertex, World, build_crosshair, build_player_model,
+    extract_frustum_planes, generate_texture_atlas, load_texture_atlas_from_file, load_world,
+    save_world,
 };
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -103,8 +108,6 @@ struct State {
     texture_view: wgpu::TextureView,
     #[allow(dead_code)]
     texture_sampler: wgpu::Sampler,
-    glyph_brush: GlyphBrush<(), ab_glyph::FontArc>,
-    staging_belt: wgpu::util::StagingBelt,
     game_state: GameState,
     menu_state: MenuState,
     // Multiplayer
@@ -120,6 +123,26 @@ struct State {
     player_model_vertex_buffer: Option<wgpu::Buffer>,
     player_model_index_buffer: Option<wgpu::Buffer>,
     player_model_num_indices: u32,
+    // Async chunk loading
+    chunk_loader: ChunkLoader,
+    // SSR (Screen Space Reflections) for water
+    ssr_color_texture: wgpu::Texture,
+    ssr_color_view: wgpu::TextureView,
+    ssr_depth_texture: wgpu::Texture,
+    ssr_depth_view: wgpu::TextureView,
+    ssr_sampler: wgpu::Sampler,
+    water_bind_group: wgpu::BindGroup,
+    water_bind_group_layout: wgpu::BindGroupLayout,
+    surface_format: wgpu::TextureFormat,
+    // Glyphon text rendering
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    text_atlas: TextAtlas,
+    text_renderer: TextRenderer,
+    viewport: Viewport,
+    fps_buffer: glyphon::Buffer,
+    menu_buffer: glyphon::Buffer,
+    player_label_buffers: Vec<glyphon::Buffer>,
 }
 
 impl State {
@@ -127,7 +150,7 @@ impl State {
         let window = Arc::new(window);
         let size = window.inner_size();
 
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
@@ -144,13 +167,15 @@ impl State {
             .unwrap();
 
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: Default::default(),
-                trace: Default::default(),
-            })
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::default(),
+                    memory_hints: Default::default(),
+                },
+                None,
+            )
             .await
             .unwrap();
 
@@ -167,7 +192,7 @@ impl State {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::FifoRelaxed,
+            present_mode: wgpu::PresentMode::Immediate, // No VSync - uncapped FPS
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -210,7 +235,9 @@ impl State {
                 camera_pos: [0.0, 0.0, 0.0],
                 time: 0.0,
                 sun_position: [0.4, -0.2, 0.3],
-                _padding: 0.0,
+                is_underwater: 0.0,
+                screen_size: [1920.0, 1080.0],
+                _padding: [0.0, 0.0],
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -280,14 +307,14 @@ impl State {
         });
 
         queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
+            wgpu::ImageCopyTexture {
                 texture: &texture_atlas,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             &atlas_data,
-            wgpu::TexelCopyBufferLayout {
+            wgpu::ImageDataLayout {
                 offset: 0,
                 bytes_per_row: Some(4 * atlas_width),
                 rows_per_image: Some(atlas_height),
@@ -323,14 +350,14 @@ impl State {
             }
 
             queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
+                wgpu::ImageCopyTexture {
                     texture: &texture_atlas,
                     mip_level: level,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
                 &level_data,
-                wgpu::TexelCopyBufferLayout {
+                wgpu::ImageDataLayout {
                     offset: 0,
                     bytes_per_row: Some(4 * m_width),
                     rows_per_image: Some(m_height),
@@ -456,6 +483,168 @@ impl State {
                 }],
             });
 
+        // SSR textures for water reflections
+        let ssr_color_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("SSR Color Texture"),
+            size: wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: surface_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let ssr_color_view = ssr_color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let ssr_depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("SSR Depth Texture"),
+            size: wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let ssr_depth_view = ssr_depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let ssr_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("SSR Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // Water bind group layout with SSR textures
+        let water_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("water_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        count: None,
+                    },
+                    // SSR color texture (scene rendered before water)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // SSR depth texture
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // SSR sampler
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 7,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let water_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &water_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&texture_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&shadow_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&ssr_color_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&ssr_depth_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Sampler(&ssr_sampler),
+                },
+            ],
+            label: Some("water_bind_group"),
+        });
+
         let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &uniform_bind_group_layout,
             entries: &[
@@ -505,6 +694,13 @@ impl State {
                 push_constant_ranges: &[],
             });
 
+        let water_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Water Pipeline Layout"),
+                bind_group_layouts: &[&water_bind_group_layout],
+                push_constant_ranges: &[], // Jeśli nie używasz push constants – pusty slice
+            });
+
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&pipeline_layout),
@@ -544,7 +740,7 @@ impl State {
 
         let water_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Water Pipeline"),
-            layout: Some(&pipeline_layout),
+            layout: Some(&water_pipeline_layout),
             cache: None,
             vertex: wgpu::VertexState {
                 module: &water_shader,
@@ -763,6 +959,9 @@ impl State {
         let camera = Camera::new(spawn);
         println!("World generated! Spawn: {:?}", spawn);
 
+        // Initialize async chunk loader with world seed
+        let chunk_loader = ChunkLoader::new(world.seed);
+
         let (crosshair_vertices, crosshair_indices) = build_crosshair();
         let num_crosshair_indices = crosshair_indices.len() as u32;
 
@@ -779,12 +978,32 @@ impl State {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let staging_belt = wgpu::util::StagingBelt::new(1024);
-        let font = ab_glyph::FontArc::try_from_slice(include_bytes!(
-            "../assets/fonts/GoogleSans_17pt-Regular.ttf"
-        ))
-        .expect("Could not load font");
-        let glyph_brush = GlyphBrushBuilder::using_font(font).build(&device, surface_format);
+        let mut font_system = FontSystem::new();
+        // Load font
+        font_system
+            .db_mut()
+            .load_font_data(include_bytes!("../assets/fonts/GoogleSans_17pt-Regular.ttf").to_vec());
+
+        let swash_cache = SwashCache::new();
+        let cache = Cache::new(&device);
+        let mut text_atlas = TextAtlas::new(&device, &queue, &cache, surface_format);
+        let text_renderer = TextRenderer::new(
+            &mut text_atlas,
+            &device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
+        let mut viewport = Viewport::new(&device, &cache);
+        viewport.update(
+            &queue,
+            Resolution {
+                width: config.width,
+                height: config.height,
+            },
+        );
+
+        let fps_buffer = glyphon::Buffer::new(&mut font_system, Metrics::new(40.0, 48.0));
+        let menu_buffer = glyphon::Buffer::new(&mut font_system, Metrics::new(24.0, 32.0));
 
         Self {
             surface,
@@ -830,8 +1049,6 @@ impl State {
             texture_atlas,
             texture_view,
             texture_sampler,
-            glyph_brush,
-            staging_belt,
             game_state: GameState::Menu,
             menu_state: MenuState::default(),
             // Multiplayer
@@ -849,6 +1066,26 @@ impl State {
             player_model_vertex_buffer: None,
             player_model_index_buffer: None,
             player_model_num_indices: 0,
+            // Async chunk loading
+            chunk_loader,
+            // SSR (Screen Space Reflections) for water
+            ssr_color_texture,
+            ssr_color_view,
+            ssr_depth_texture,
+            ssr_depth_view,
+            ssr_sampler,
+            water_bind_group,
+            water_bind_group_layout,
+            surface_format,
+            // Glyphon
+            font_system,
+            swash_cache,
+            text_atlas,
+            text_renderer,
+            viewport,
+            fps_buffer,
+            menu_buffer,
+            player_label_buffers: Vec::new(),
         }
     }
 
@@ -891,6 +1128,13 @@ impl State {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
             self.depth_texture = Self::create_depth_texture(&self.device, &self.config);
+            self.viewport.update(
+                &self.queue,
+                Resolution {
+                    width: new_size.width,
+                    height: new_size.height,
+                },
+            );
         }
     }
 
@@ -901,6 +1145,35 @@ impl State {
         self.last_frame = now;
         self.camera.update(&self.world, dt, &self.input);
 
+        // Poll for completed async chunks
+        let completed_chunks = self.chunk_loader.poll_results(MAX_CHUNKS_PER_FRAME);
+        for result in completed_chunks {
+            self.world
+                .chunks
+                .insert((result.cx, result.cz), result.chunk);
+        }
+
+        // Calculate player chunk position
+        let player_cx = (self.camera.position.x / CHUNK_SIZE as f32).floor() as i32;
+        let player_cz = (self.camera.position.z / CHUNK_SIZE as f32).floor() as i32;
+
+        // Request async generation for missing chunks (sorted by priority/distance)
+        let mut requests = Vec::new();
+        for cx in (player_cx - GENERATION_DISTANCE)..=(player_cx + GENERATION_DISTANCE) {
+            for cz in (player_cz - GENERATION_DISTANCE)..=(player_cz + GENERATION_DISTANCE) {
+                if !self.world.chunks.contains_key(&(cx, cz))
+                    && !self.chunk_loader.is_pending(cx, cz)
+                {
+                    let dx = cx - player_cx;
+                    let dz = cz - player_cz;
+                    let priority = dx * dx + dz * dz; // Distance squared
+                    requests.push((cx, cz, priority));
+                }
+            }
+        }
+        self.chunk_loader.request_chunks(&requests);
+
+        // Still run immediate sync chunk loading for spawn area and unloading
         self.world
             .update_chunks_around_player(self.camera.position.x, self.camera.position.z);
 
@@ -943,7 +1216,11 @@ impl State {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        self.staging_belt.recall();
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
 
         // Build remote player meshes before starting render pass
         if !self.remote_players.is_empty() && self.game_state != GameState::Menu {
@@ -994,9 +1271,9 @@ impl State {
 
         let time = self.game_start_time.elapsed().as_secs_f32();
 
-        let day_cycle_speed = 0.005;
+        let day_cycle_speed = 0.05;
         // Start at noon (sun at top) by adding PI/2 offset
-        let sun_angle = time * day_cycle_speed;
+        let sun_angle = time * day_cycle_speed + std::f32::consts::FRAC_PI_2;
 
         let sun_x = 0.0;
         let sun_y = sun_angle.sin();
@@ -1048,6 +1325,19 @@ impl State {
         let inv_view_proj = view_proj.invert().unwrap_or(Matrix4::identity());
         let inv_view_proj_array: [[f32; 4]; 4] = inv_view_proj.into();
 
+        // Check if camera is underwater
+        let eye_pos = self.camera.eye_position();
+        let eye_block = self.world.get_block(
+            eye_pos.x.floor() as i32,
+            eye_pos.y.floor() as i32,
+            eye_pos.z.floor() as i32,
+        );
+        let is_underwater = if eye_block == BlockType::Water {
+            1.0
+        } else {
+            0.0
+        };
+
         self.queue.write_buffer(
             &self.uniform_buffer,
             0,
@@ -1055,10 +1345,12 @@ impl State {
                 view_proj: view_proj_array,
                 inv_view_proj: inv_view_proj_array,
                 sun_view_proj: sun_view_proj_array,
-                camera_pos: self.camera.eye_position().into(),
+                camera_pos: eye_pos.into(),
                 time,
                 sun_position: [sun_x, sun_y, sun_z],
-                _padding: 0.0,
+                is_underwater,
+                screen_size: [self.config.width as f32, self.config.height as f32],
+                _padding: [0.0, 0.0],
             }]),
         );
 
@@ -1080,8 +1372,7 @@ impl State {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
+                ..Default::default()
             });
 
             shadow_pass.set_pipeline(&self.shadow_pipeline);
@@ -1095,7 +1386,10 @@ impl State {
                             if subchunk.is_empty || subchunk.num_indices == 0 {
                                 continue;
                             }
-                            // Shadow pass culling removed
+                            // Shadow frustum culling - skip subchunks outside shadow view
+                            if !subchunk.aabb.is_visible(&shadow_frustum) {
+                                continue;
+                            }
                             if let (Some(vb), Some(ib)) =
                                 (&subchunk.vertex_buffer, &subchunk.index_buffer)
                             {
@@ -1147,20 +1441,47 @@ impl State {
 
                 subchunk.num_indices = indices.len() as u32;
                 if !vertices.is_empty() {
-                    subchunk.vertex_buffer = Some(self.device.create_buffer_init(
-                        &wgpu::util::BufferInitDescriptor {
-                            label: Some("Subchunk Vertex Buffer"),
-                            contents: bytemuck::cast_slice(&vertices),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        },
-                    ));
-                    subchunk.index_buffer = Some(self.device.create_buffer_init(
-                        &wgpu::util::BufferInitDescriptor {
-                            label: Some("Subchunk Index Buffer"),
-                            contents: bytemuck::cast_slice(&indices),
-                            usage: wgpu::BufferUsages::INDEX,
-                        },
-                    ));
+                    let vertex_data: &[u8] = bytemuck::cast_slice(&vertices);
+                    let index_data: &[u8] = bytemuck::cast_slice(&indices);
+
+                    // Reuse buffer if size matches, otherwise create new one
+                    let needs_new_vertex_buffer = subchunk
+                        .vertex_buffer
+                        .as_ref()
+                        .map(|b| b.size() < vertex_data.len() as u64)
+                        .unwrap_or(true);
+                    let needs_new_index_buffer = subchunk
+                        .index_buffer
+                        .as_ref()
+                        .map(|b| b.size() < index_data.len() as u64)
+                        .unwrap_or(true);
+
+                    if needs_new_vertex_buffer {
+                        subchunk.vertex_buffer =
+                            Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                                label: Some("Subchunk Vertex Buffer"),
+                                size: vertex_data.len() as u64,
+                                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                                mapped_at_creation: false,
+                            }));
+                    }
+                    if needs_new_index_buffer {
+                        subchunk.index_buffer =
+                            Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                                label: Some("Subchunk Index Buffer"),
+                                size: index_data.len() as u64,
+                                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                                mapped_at_creation: false,
+                            }));
+                    }
+
+                    // Write data to GPU asynchronously
+                    if let Some(vb) = &subchunk.vertex_buffer {
+                        self.queue.write_buffer(vb, 0, vertex_data);
+                    }
+                    if let Some(ib) = &subchunk.index_buffer {
+                        self.queue.write_buffer(ib, 0, index_data);
+                    }
                 } else {
                     subchunk.vertex_buffer = None;
                     subchunk.index_buffer = None;
@@ -1168,20 +1489,45 @@ impl State {
 
                 subchunk.num_water_indices = w_indices.len() as u32;
                 if !w_vertices.is_empty() {
-                    subchunk.water_vertex_buffer = Some(self.device.create_buffer_init(
-                        &wgpu::util::BufferInitDescriptor {
-                            label: Some("Water Vertex Buffer"),
-                            contents: bytemuck::cast_slice(&w_vertices),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        },
-                    ));
-                    subchunk.water_index_buffer = Some(self.device.create_buffer_init(
-                        &wgpu::util::BufferInitDescriptor {
-                            label: Some("Water Index Buffer"),
-                            contents: bytemuck::cast_slice(&w_indices),
-                            usage: wgpu::BufferUsages::INDEX,
-                        },
-                    ));
+                    let vertex_data: &[u8] = bytemuck::cast_slice(&w_vertices);
+                    let index_data: &[u8] = bytemuck::cast_slice(&w_indices);
+
+                    let needs_new_vertex_buffer = subchunk
+                        .water_vertex_buffer
+                        .as_ref()
+                        .map(|b| b.size() < vertex_data.len() as u64)
+                        .unwrap_or(true);
+                    let needs_new_index_buffer = subchunk
+                        .water_index_buffer
+                        .as_ref()
+                        .map(|b| b.size() < index_data.len() as u64)
+                        .unwrap_or(true);
+
+                    if needs_new_vertex_buffer {
+                        subchunk.water_vertex_buffer =
+                            Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                                label: Some("Water Vertex Buffer"),
+                                size: vertex_data.len() as u64,
+                                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                                mapped_at_creation: false,
+                            }));
+                    }
+                    if needs_new_index_buffer {
+                        subchunk.water_index_buffer =
+                            Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                                label: Some("Water Index Buffer"),
+                                size: index_data.len() as u64,
+                                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                                mapped_at_creation: false,
+                            }));
+                    }
+
+                    if let Some(vb) = &subchunk.water_vertex_buffer {
+                        self.queue.write_buffer(vb, 0, vertex_data);
+                    }
+                    if let Some(ib) = &subchunk.water_index_buffer {
+                        self.queue.write_buffer(ib, 0, index_data);
+                    }
                 } else {
                     subchunk.water_vertex_buffer = None;
                     subchunk.water_index_buffer = None;
@@ -1215,14 +1561,125 @@ impl State {
             + night_sky.2 * night_factor)
             .min(1.0);
 
+        // Collect visible subchunks first to avoid borrowing issues
+        let mut visible_terrain: Vec<(&wgpu::Buffer, &wgpu::Buffer, u32)> = Vec::new();
+        let mut visible_water: Vec<(&wgpu::Buffer, &wgpu::Buffer, u32)> = Vec::new();
+
+        for cx in (player_cx - RENDER_DISTANCE)..=(player_cx + RENDER_DISTANCE) {
+            for cz in (player_cz - RENDER_DISTANCE)..=(player_cz + RENDER_DISTANCE) {
+                if let Some(chunk) = self.world.chunks.get(&(cx, cz)) {
+                    let mut chunk_visible = false;
+                    for subchunk in &chunk.subchunks {
+                        if subchunk.is_empty {
+                            continue;
+                        }
+                        if !subchunk.aabb.is_visible(&frustum_planes) {
+                            continue;
+                        }
+                        // Collect terrain geometry
+                        if subchunk.num_indices > 0 {
+                            if let (Some(vb), Some(ib)) =
+                                (&subchunk.vertex_buffer, &subchunk.index_buffer)
+                            {
+                                visible_terrain.push((vb, ib, subchunk.num_indices));
+                                subchunks_rendered += 1;
+                                chunk_visible = true;
+                            }
+                        }
+                        // Collect water geometry
+                        if subchunk.num_water_indices > 0 {
+                            if let (Some(vb), Some(ib)) =
+                                (&subchunk.water_vertex_buffer, &subchunk.water_index_buffer)
+                            {
+                                visible_water.push((vb, ib, subchunk.num_water_indices));
+                            }
+                        }
+                    }
+                    if chunk_visible {
+                        chunks_rendered += 1;
+                    }
+                }
+            }
+        }
+
+        self.chunks_rendered = chunks_rendered;
+        self.subchunks_rendered = subchunks_rendered;
+
+        // SSR Pass 1: Render Sky to SSR textures
         {
-            // First pass: Render the sky (procedural gradient)
-            let mut sky_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Sky Pass"),
+            let mut ssr_sky_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("SSR Sky Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.ssr_color_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: sky_r as f64,
+                            g: sky_g as f64,
+                            b: sky_b as f64,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.ssr_depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+
+            ssr_sky_pass.set_pipeline(&self.sky_pipeline);
+            ssr_sky_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            ssr_sky_pass.set_vertex_buffer(0, self.sun_vertex_buffer.slice(..));
+            ssr_sky_pass
+                .set_index_buffer(self.sun_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            ssr_sky_pass.draw_indexed(0..6, 0, 0..1);
+        }
+
+        // SSR Pass 2: Render Terrain to SSR textures (using collected geometry)
+        {
+            let mut ssr_terrain_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("SSR Terrain Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.ssr_color_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.ssr_depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+
+            ssr_terrain_pass.set_pipeline(&self.render_pipeline);
+            ssr_terrain_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            for (vb, ib, num_indices) in &visible_terrain {
+                ssr_terrain_pass.set_vertex_buffer(0, vb.slice(..));
+                ssr_terrain_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                ssr_terrain_pass.draw_indexed(0..*num_indices, 0, 0..1);
+            }
+        }
+
+        // Main Scene Pass: Render Sky, Terrain, Water, and Objects to Swapchain
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Main Scene Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
-                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: sky_r as f64,
@@ -1244,95 +1701,33 @@ impl State {
                 ..Default::default()
             });
 
-            sky_pass.set_pipeline(&self.sky_pipeline);
-            sky_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            sky_pass.set_vertex_buffer(0, self.sun_vertex_buffer.slice(..));
-            sky_pass.set_index_buffer(self.sun_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            sky_pass.draw_indexed(0..6, 0, 0..1);
-        }
+            // 1. Draw Sky
+            render_pass.set_pipeline(&self.sky_pipeline);
+            render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.sun_vertex_buffer.slice(..));
+            render_pass
+                .set_index_buffer(self.sun_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.draw_indexed(0..6, 0, 0..1);
 
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_texture,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                ..Default::default()
-            });
-
+            // 2. Draw Terrain
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-
-            for cx in (player_cx - RENDER_DISTANCE)..=(player_cx + RENDER_DISTANCE) {
-                for cz in (player_cz - RENDER_DISTANCE)..=(player_cz + RENDER_DISTANCE) {
-                    if let Some(chunk) = self.world.chunks.get(&(cx, cz)) {
-                        let mut chunk_visible = false;
-                        for subchunk in &chunk.subchunks {
-                            if subchunk.is_empty || subchunk.num_indices == 0 {
-                                continue;
-                            }
-                            if !subchunk.aabb.is_visible(&frustum_planes) {
-                                continue;
-                            }
-                            if let (Some(vb), Some(ib)) =
-                                (&subchunk.vertex_buffer, &subchunk.index_buffer)
-                            {
-                                render_pass.set_vertex_buffer(0, vb.slice(..));
-                                render_pass
-                                    .set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                                render_pass.draw_indexed(0..subchunk.num_indices, 0, 0..1);
-                                subchunks_rendered += 1;
-                                chunk_visible = true;
-                            }
-                        }
-                        if chunk_visible {
-                            chunks_rendered += 1;
-                        }
-                    }
-                }
+            for (vb, ib, num_indices) in &visible_terrain {
+                render_pass.set_vertex_buffer(0, vb.slice(..));
+                render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..*num_indices, 0, 0..1);
             }
 
+            // 3. Draw Water (Reflective)
             render_pass.set_pipeline(&self.water_pipeline);
-            render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-
-            for cx in (player_cx - RENDER_DISTANCE)..=(player_cx + RENDER_DISTANCE) {
-                for cz in (player_cz - RENDER_DISTANCE)..=(player_cz + RENDER_DISTANCE) {
-                    if let Some(chunk) = self.world.chunks.get(&(cx, cz)) {
-                        for subchunk in &chunk.subchunks {
-                            if subchunk.is_empty || subchunk.num_water_indices == 0 {
-                                continue;
-                            }
-                            if !subchunk.aabb.is_visible(&frustum_planes) {
-                                continue;
-                            }
-                            if let (Some(vb), Some(ib)) =
-                                (&subchunk.water_vertex_buffer, &subchunk.water_index_buffer)
-                            {
-                                render_pass.set_vertex_buffer(0, vb.slice(..));
-                                render_pass
-                                    .set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                                render_pass.draw_indexed(0..subchunk.num_water_indices, 0, 0..1);
-                            }
-                        }
-                    }
-                }
+            render_pass.set_bind_group(0, &self.water_bind_group, &[]);
+            for (vb, ib, num_indices) in &visible_water {
+                render_pass.set_vertex_buffer(0, vb.slice(..));
+                render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..*num_indices, 0, 0..1);
             }
 
-            // Render remote player models
+            // 4. Draw Players
             if self.player_model_num_indices > 0 {
                 if let (Some(vb), Some(ib)) = (
                     &self.player_model_vertex_buffer,
@@ -1346,6 +1741,7 @@ impl State {
                 }
             }
 
+            // 5. Draw Sun
             render_pass.set_pipeline(&self.sun_pipeline);
             render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.sun_vertex_buffer.slice(..));
@@ -1363,7 +1759,6 @@ impl State {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
-                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -1497,15 +1892,14 @@ impl State {
             let mut progress_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Progress Bar Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
+                    view: &view,          // tekstura swapchain (lub offscreen)
+                    resolve_target: None, // nie używamy multisamplingu
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
+                        load: wgpu::LoadOp::Load, // ważne: nie czyść, zachowaj istniejący obraz
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: None, // UI nie potrzebuje depth
                 ..Default::default()
             });
 
@@ -1528,192 +1922,204 @@ impl State {
             );
         }
 
+        // Final UI and Text rendering
         {
+            // 1. Update all buffers first (requires &mut self)
             let fps_text = format!("FPS: {:.0}", self.current_fps);
-            self.glyph_brush.queue(Section {
-                screen_position: (10.0, 10.0),
-                bounds: (self.config.width as f32, self.config.height as f32),
-                text: vec![
-                    Text::new(&fps_text)
-                        .with_color([1.0, 1.0, 1.0, 1.0])
-                        .with_scale(40.0),
-                ],
-                ..Section::default()
+            self.fps_buffer.set_text(
+                &mut self.font_system,
+                &fps_text,
+                Attrs::new().family(Family::SansSerif),
+                Shaping::Advanced,
+            );
+            self.fps_buffer.set_size(
+                &mut self.font_system,
+                Some(self.config.width as f32),
+                Some(self.config.height as f32),
+            );
+
+            let labels = if self.game_state == GameState::Menu {
+                self.prepare_menu_text();
+                Vec::new()
+            } else {
+                let labels = queue_remote_players_labels(
+                    &self.remote_players,
+                    &view_proj,
+                    self.config.width as f32,
+                    self.config.height as f32,
+                );
+
+                // Ensure we have enough buffers
+                while self.player_label_buffers.len() < labels.len() {
+                    self.player_label_buffers.push(glyphon::Buffer::new(
+                        &mut self.font_system,
+                        Metrics::new(24.0, 32.0),
+                    ));
+                }
+
+                for (i, label) in labels.iter().enumerate() {
+                    let buffer = &mut self.player_label_buffers[i];
+                    buffer.set_text(
+                        &mut self.font_system,
+                        &label.username,
+                        Attrs::new()
+                            .family(Family::SansSerif)
+                            .color(Color::rgb(76, 255, 76)),
+                        Shaping::Advanced,
+                    );
+                    buffer.set_size(
+                        &mut self.font_system,
+                        Some(self.config.width as f32),
+                        Some(self.config.height as f32),
+                    );
+                }
+                labels
+            };
+
+            // 2. Now create TextAreas (immutable borrow of self)
+            let mut text_areas = Vec::new();
+
+            text_areas.push(TextArea {
+                buffer: &self.fps_buffer,
+                left: 10.0,
+                top: 10.0,
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: self.config.width as i32,
+                    bottom: self.config.height as i32,
+                },
+                default_color: Color::rgb(255, 255, 255),
+                custom_glyphs: &[],
             });
 
-            self.glyph_brush
-                .draw_queued(
+            if self.game_state == GameState::Menu {
+                text_areas.push(TextArea {
+                    buffer: &self.menu_buffer,
+                    left: 0.0,
+                    top: 0.0,
+                    scale: 1.0,
+                    bounds: TextBounds {
+                        left: 0,
+                        top: 0,
+                        right: self.config.width as i32,
+                        bottom: self.config.height as i32,
+                    },
+                    default_color: Color::rgb(255, 255, 255),
+                    custom_glyphs: &[],
+                });
+            } else {
+                for (i, label) in labels.iter().enumerate() {
+                    text_areas.push(TextArea {
+                        buffer: &self.player_label_buffers[i],
+                        left: label.screen_x,
+                        top: label.screen_y,
+                        scale: 1.0,
+                        bounds: TextBounds {
+                            left: 0,
+                            top: 0,
+                            right: self.config.width as i32,
+                            bottom: self.config.height as i32,
+                        },
+                        default_color: Color::rgb(255, 255, 255),
+                        custom_glyphs: &[],
+                    });
+                }
+            }
+
+            self.text_renderer
+                .prepare(
                     &self.device,
-                    &mut self.staging_belt,
-                    &mut encoder,
-                    &view,
-                    self.config.width,
-                    self.config.height,
+                    &self.queue,
+                    &mut self.font_system,
+                    &mut self.text_atlas,
+                    &self.viewport,
+                    text_areas,
+                    &mut self.swash_cache,
                 )
-                .expect("Draw queued");
+                .unwrap();
+
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Text Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+
+            self.text_renderer
+                .render(&self.text_atlas, &self.viewport, &mut pass)
+                .unwrap();
         }
 
-        self.staging_belt.finish();
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
         Ok(())
     }
 
-    /// Render the multiplayer menu overlay
-    fn render_menu(&mut self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
-        let width = self.config.width as f32;
-        let height = self.config.height as f32;
+    /// Prepare the menu text buffer
+    fn prepare_menu_text(&mut self) {
+        let mut text = String::new();
 
         // Title
-        self.glyph_brush.queue(Section {
-            screen_position: (width / 2.0, height * 0.15),
-            text: vec![
-                Text::new("MULTIPLAYER")
-                    .with_color([1.0, 1.0, 1.0, 1.0])
-                    .with_scale(48.0),
-            ],
-            layout: wgpu_glyph::Layout::default().h_align(wgpu_glyph::HorizontalAlign::Center),
-            ..Section::default()
-        });
+        text.push_str("MULTIPLAYER\n\n");
 
         // Instructions
-        self.glyph_brush.queue(Section {
-            screen_position: (width / 2.0, height * 0.25),
-            text: vec![
-                Text::new(
-                    "Click a field to edit, Tab to switch, Enter to connect, Esc to play solo",
-                )
-                .with_color([0.8, 0.8, 0.8, 1.0])
-                .with_scale(18.0),
-            ],
-            layout: wgpu_glyph::Layout::default().h_align(wgpu_glyph::HorizontalAlign::Center),
-            ..Section::default()
-        });
+        text.push_str(
+            "Click a field to edit, Tab to switch, Enter to connect, Esc to play solo\n\n\n",
+        );
 
-        // Server address label
+        // Server address
         let addr_selected = self.menu_state.selected_field == MenuField::ServerAddress;
-        let addr_color = if addr_selected {
-            [0.3, 1.0, 0.3, 1.0]
-        } else {
-            [0.7, 0.7, 0.7, 1.0]
-        };
-
-        self.glyph_brush.queue(Section {
-            screen_position: (width * 0.3, height * 0.4),
-            text: vec![
-                Text::new("Server Address:")
-                    .with_color(addr_color)
-                    .with_scale(24.0),
-            ],
-            ..Section::default()
-        });
-
-        // Server address input
-        let addr_text = if addr_selected {
-            format!("{}|", self.menu_state.server_address)
-        } else {
-            self.menu_state.server_address.clone()
-        };
-        let addr_box_color = if addr_selected {
-            [0.15, 0.15, 0.15, 1.0]
-        } else {
-            [0.1, 0.1, 0.1, 1.0]
-        };
-
-        self.glyph_brush.queue(Section {
-            screen_position: (width * 0.5, height * 0.4),
-            text: vec![
-                Text::new(&addr_text)
-                    .with_color([1.0, 1.0, 1.0, 1.0])
-                    .with_scale(24.0),
-            ],
-            ..Section::default()
-        });
-
-        // Username label
-        let user_selected = self.menu_state.selected_field == MenuField::Username;
-        let user_color = if user_selected {
-            [0.3, 1.0, 0.3, 1.0]
-        } else {
-            [0.7, 0.7, 0.7, 1.0]
-        };
-
-        self.glyph_brush.queue(Section {
-            screen_position: (width * 0.3, height * 0.5),
-            text: vec![
-                Text::new("Username:")
-                    .with_color(user_color)
-                    .with_scale(24.0),
-            ],
-            ..Section::default()
-        });
-
-        // Username input
-        let user_text = if user_selected {
-            format!("{}|", self.menu_state.username)
-        } else {
-            self.menu_state.username.clone()
-        };
-
-        self.glyph_brush.queue(Section {
-            screen_position: (width * 0.5, height * 0.5),
-            text: vec![
-                Text::new(&user_text)
-                    .with_color([1.0, 1.0, 1.0, 1.0])
-                    .with_scale(24.0),
-            ],
-            ..Section::default()
-        });
-
-        // Connect button hint
-        self.glyph_brush.queue(Section {
-            screen_position: (width / 2.0, height * 0.65),
-            text: vec![
-                Text::new("[ENTER] Connect to Server")
-                    .with_color([0.5, 0.8, 1.0, 1.0])
-                    .with_scale(28.0),
-            ],
-            layout: wgpu_glyph::Layout::default().h_align(wgpu_glyph::HorizontalAlign::Center),
-            ..Section::default()
-        });
-
-        // Solo play hint
-        self.glyph_brush.queue(Section {
-            screen_position: (width / 2.0, height * 0.72),
-            text: vec![
-                Text::new("[ESC] Play Singleplayer")
-                    .with_color([0.7, 0.7, 0.5, 1.0])
-                    .with_scale(22.0),
-            ],
-            layout: wgpu_glyph::Layout::default().h_align(wgpu_glyph::HorizontalAlign::Center),
-            ..Section::default()
-        });
-
-        // Error/status message
-        if let Some(ref err) = self.menu_state.error_message {
-            self.glyph_brush.queue(Section {
-                screen_position: (width / 2.0, height * 0.82),
-                text: vec![
-                    Text::new(err)
-                        .with_color([1.0, 0.3, 0.3, 1.0])
-                        .with_scale(20.0),
-                ],
-                layout: wgpu_glyph::Layout::default().h_align(wgpu_glyph::HorizontalAlign::Center),
-                ..Section::default()
-            });
-        } else if let Some(ref status) = self.menu_state.status_message {
-            self.glyph_brush.queue(Section {
-                screen_position: (width / 2.0, height * 0.82),
-                text: vec![
-                    Text::new(status)
-                        .with_color([0.5, 1.0, 0.5, 1.0])
-                        .with_scale(20.0),
-                ],
-                layout: wgpu_glyph::Layout::default().h_align(wgpu_glyph::HorizontalAlign::Center),
-                ..Section::default()
-            });
+        if addr_selected {
+            text.push_str("> ");
         }
+        text.push_str(&format!(
+            "Server Address: {}\n",
+            self.menu_state.server_address
+        ));
+
+        // Username
+        let user_selected = self.menu_state.selected_field == MenuField::Username;
+        if user_selected {
+            text.push_str("> ");
+        }
+        text.push_str(&format!("Username: {}\n\n", self.menu_state.username));
+
+        // Hints
+        text.push_str("[ENTER] Connect to Server\n");
+        text.push_str("[ESC] Play Singleplayer\n\n");
+
+        // Status/Error
+        if let Some(ref err) = self.menu_state.error_message {
+            text.push_str(&format!("Error: {}\n", err));
+        } else if let Some(ref status) = self.menu_state.status_message {
+            text.push_str(&format!("Status: {}\n", status));
+        }
+
+        self.menu_buffer.set_text(
+            &mut self.font_system,
+            &text,
+            Attrs::new().family(Family::SansSerif),
+            Shaping::Advanced,
+        );
+        self.menu_buffer.set_size(
+            &mut self.font_system,
+            Some(self.config.width as f32),
+            Some(self.config.height as f32),
+        );
+    }
+
+    fn render_menu(&mut self, _encoder: &mut wgpu::CommandEncoder, _view: &wgpu::TextureView) {
+        // Glyphon rendering is now handled centrally in render()
+        // using prepare_menu_text() helper.
     }
 
     fn connect_to_server(&mut self) {
@@ -1741,7 +2147,12 @@ impl State {
             &self.window,
         );
     }
-    fn render_remote_players(&mut self, view_proj: &cgmath::Matrix4<f32>, width: f32, height: f32) {
+    fn render_remote_players(
+        &mut self,
+        _view_proj: &cgmath::Matrix4<f32>,
+        _width: f32,
+        _height: f32,
+    ) {
         // Build combined mesh for all remote players
         if !self.remote_players.is_empty() {
             let mut all_vertices = Vec::new();
@@ -1776,15 +2187,6 @@ impl State {
         } else {
             self.player_model_num_indices = 0;
         }
-
-        // Also render player name labels
-        queue_remote_players_labels(
-            &mut self.glyph_brush,
-            &self.remote_players,
-            view_proj,
-            width,
-            height,
-        );
     }
 
     fn handle_mouse_input(&mut self, button: MouseButton, pressed: bool) {

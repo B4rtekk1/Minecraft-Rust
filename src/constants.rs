@@ -26,3 +26,8 @@ pub const TEX_CACTUS: f32 = 14.0;
 pub const TEX_DEAD_BUSH: f32 = 15.0;
 pub const TEXTURE_SIZE: u32 = 256;
 pub const ATLAS_SIZE: u32 = 4;
+
+// Optimization constants
+pub const MAX_CHUNKS_PER_FRAME: usize = 4;
+pub const MAX_MESH_BUILDS_PER_FRAME: usize = 6;
+pub const ASYNC_WORKER_COUNT: usize = 4;

@@ -17,8 +17,10 @@ struct Uniforms {
     camera_pos: vec3<f32>,
     time: f32,
     sun_position: vec3<f32>,
-    _padding: f32,
+    /// 1.0 if camera is underwater, 0.0 otherwise
+    is_underwater: f32,
 };
+
 
 @group(0) @binding(0)
 var<uniform> uniforms: Uniforms;
@@ -71,7 +73,7 @@ fn vs_shadow(model: VertexInput) -> @builtin(position) vec4<f32> {
 const PI: f32 = 3.14159265359;
 const SHADOW_MAP_SIZE: f32 = 2048.0;
 const GOLDEN_ANGLE: f32 = 2.39996322972865332;
-const PCF_SAMPLES: i32 = 24;
+const PCF_SAMPLES: i32 = 12;
 
 /// Calculate sky color with localized sunrise/sunset gradient
 fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
@@ -255,6 +257,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let day_factor = clamp(sun_dir.y, 0.0, 1.0); 
     let night_factor = clamp(-sun_dir.y, 0.0, 1.0); 
     let sunset_factor = 1.0 - abs(sun_dir.y); 
+    // Twilight factor - active during sunrise/sunset transition
+    let twilight_factor = smoothstep(-0.1, 0.15, sun_dir.y) * smoothstep(0.4, 0.0, sun_dir.y);
     
     // Calculate sky color with localized sunset effect based on view direction
     let sky_color = calculate_sky_color(view_dir, sun_dir);
@@ -265,10 +269,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         shadow = calculate_shadow(in.world_pos, in.normal, sun_dir);
     }
     
-    // Ambient light (very low at night)
+    // Ambient light - add twilight boost during sunrise/sunset
     let ambient_day = 0.4;
-    let ambient_night = 0.005; 
-    let ambient = mix(ambient_night, ambient_day, day_factor);
+    let ambient_night = 0.005;
+    let ambient_twilight = 0.25; // Extra ambient during sunrise/sunset
+    var ambient = mix(ambient_night, ambient_day, day_factor);
+    ambient = max(ambient, ambient_twilight * twilight_factor);
     
     // Main sun diffuse component
     let sun_diffuse = max(dot(in.normal, sun_dir), 0.0) * 0.5 * shadow * day_factor;
@@ -307,20 +313,53 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     
     let dist = length(in.world_pos.xz - uniforms.camera_pos.xz);
     
-    // Visibility range depends on time of day
-    let visibility_night = 64.0;
-    let visibility_day = 250.0;
-    let visibility_range = mix(visibility_night, visibility_day, day_factor);
+    // Check if underwater
+    let is_underwater = uniforms.is_underwater > 0.5;
+    
+    // Visibility range depends on time of day and underwater state
+    var visibility_range: f32;
+    var fog_color: vec3<f32>;
+    
+    if is_underwater {
+        // Underwater: very short visibility, blue-green tint
+        visibility_range = 24.0;
+        fog_color = vec3<f32>(0.05, 0.15, 0.3);
+    } else {
+        let visibility_night = 20.0;  // Much shorter at night - objects should disappear in darkness
+        let visibility_day = 250.0;
+        let visibility_twilight = 100.0;
+        // Better visibility during twilight than pure night
+        visibility_range = mix(visibility_night, visibility_day, day_factor);
+        visibility_range = max(visibility_range, visibility_twilight * twilight_factor);
+        
+        // Fog color: at night, fog must match the night sky exactly to hide silhouettes
+        let night_fog_color = vec3<f32>(0.001, 0.001, 0.008);  // Must match zenith_night color
+        let twilight_blend = max(day_factor, twilight_factor * 0.7);
+        fog_color = mix(night_fog_color, sky_color, twilight_blend);
+    }
     
     let fog_start = visibility_range * 0.2;
     let fog_end = visibility_range;
     
     let visibility = clamp((fog_end - dist) / (fog_end - fog_start), 0.0, 1.0);
     
-    // Fade to black at night, or to localized sky color during day
-    let fog_color = mix(vec3<f32>(0.0, 0.0, 0.0), sky_color, day_factor);
-    let final_color = mix(fog_color, lit_color, visibility);
+    var final_color = mix(fog_color, lit_color, visibility);
+    
+    // Apply underwater color filter
+    if is_underwater {
+        // Blue-green color shift
+        let water_tint = vec3<f32>(0.4, 0.7, 1.0);
+        final_color = final_color * water_tint;
+        
+        // Add subtle caustic-like brightness variations
+        let caustic = sin(in.world_pos.x * 0.5 + uniforms.time * 2.0) * 
+                      sin(in.world_pos.z * 0.5 + uniforms.time * 1.5) * 0.1 + 0.9;
+        final_color = final_color * caustic;
+        
+        // Darken with depth (simulate light absorption)
+        let depth_factor = clamp(dist / visibility_range, 0.0, 1.0);
+        final_color = mix(final_color, fog_color, depth_factor * 0.5);
+    }
     
     return vec4<f32>(final_color, 1.0);
 }
-

@@ -9,5 +9,9 @@ pub struct Uniforms {
     pub camera_pos: [f32; 3],
     pub time: f32,
     pub sun_position: [f32; 3],
-    pub _padding: f32,
+    /// 1.0 if camera is underwater, 0.0 otherwise
+    pub is_underwater: f32,
+    /// Screen dimensions for SSR calculations
+    pub screen_size: [f32; 2],
+    pub _padding: [f32; 2],
 }

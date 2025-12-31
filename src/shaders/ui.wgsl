@@ -5,12 +5,14 @@
 
 struct Uniforms {
     view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
     sun_view_proj: mat4x4<f32>,
     camera_pos: vec3<f32>,
     time: f32,
     sun_position: vec3<f32>,
-    _padding: f32,
+    is_underwater: f32,
 };
+
 
 @group(0) @binding(0)
 var<uniform> uniforms: Uniforms;

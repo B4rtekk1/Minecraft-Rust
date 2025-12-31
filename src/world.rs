@@ -219,7 +219,7 @@ impl World {
     }
 
     pub fn get_terrain_height(&self, x: i32, z: i32) -> i32 {
-        let blend_radius = 2;
+        let blend_radius = 1; // Reduced from 2 for 64% fewer calculations
         let mut total_height = 0.0;
         let mut weights = 0.0;
 
@@ -245,8 +245,8 @@ impl World {
         let fx = x as f64;
         let fz = z as f64;
 
-        let continental = self.sample_fbm(&self.simplex_continents, fx, fz, 4, 0.5, 2.0, 0.001);
-        let terrain = self.sample_fbm(&self.simplex_terrain, fx, fz, 4, 0.5, 2.0, 0.008);
+        let continental = self.sample_fbm(&self.simplex_continents, fx, fz, 3, 0.5, 2.0, 0.001);
+        let terrain = self.sample_fbm(&self.simplex_terrain, fx, fz, 3, 0.5, 2.0, 0.008);
         let detail = self.sample_fbm(&self.simplex_detail, fx, fz, 3, 0.4, 2.0, 0.015);
         let erosion = self.sample_fbm(&self.simplex_erosion, fx, fz, 2, 0.5, 2.0, 0.005);
 
@@ -467,12 +467,24 @@ impl World {
         let base_x = cx * CHUNK_SIZE;
         let base_z = cz * CHUNK_SIZE;
 
+        // Pre-compute biome and height maps for this chunk (major optimization)
+        let mut biome_map = [[Biome::Plains; CHUNK_SIZE as usize]; CHUNK_SIZE as usize];
+        let mut height_map = [[0i32; CHUNK_SIZE as usize]; CHUNK_SIZE as usize];
         for lx in 0..CHUNK_SIZE {
             for lz in 0..CHUNK_SIZE {
                 let world_x = base_x + lx;
                 let world_z = base_z + lz;
-                let biome = self.get_biome(world_x, world_z);
-                let surface_height = self.get_terrain_height(world_x, world_z);
+                biome_map[lx as usize][lz as usize] = self.get_biome(world_x, world_z);
+                height_map[lx as usize][lz as usize] = self.get_terrain_height(world_x, world_z);
+            }
+        }
+
+        for lx in 0..CHUNK_SIZE {
+            for lz in 0..CHUNK_SIZE {
+                let world_x = base_x + lx;
+                let world_z = base_z + lz;
+                let biome = biome_map[lx as usize][lz as usize];
+                let surface_height = height_map[lx as usize][lz as usize];
 
                 let max_y = if matches!(biome, Biome::Mountains | Biome::Island) {
                     WORLD_HEIGHT - 20
@@ -517,7 +529,7 @@ impl World {
             for lz in 0..CHUNK_SIZE {
                 let world_x = base_x + lx;
                 let world_z = base_z + lz;
-                let height = self.get_terrain_height(world_x, world_z);
+                let height = height_map[lx as usize][lz as usize]; // Use cached height
 
                 for y in 1..height.min(WORLD_HEIGHT - 1) {
                     if self.is_cave(world_x, y, world_z, height) {
@@ -1039,11 +1051,63 @@ impl World {
         let base_y = subchunk_y * SUBCHUNK_HEIGHT;
         let base_z = chunk_z * CHUNK_SIZE;
 
+        // Cache chunk references to avoid HashMap lookups in the hot loop
+        // This eliminates ~24,576 HashMap lookups per subchunk (6 neighbors × 16³ blocks)
+        let chunk_center = self.chunks.get(&(chunk_x, chunk_z));
+        let chunk_nx = self.chunks.get(&(chunk_x - 1, chunk_z));
+        let chunk_px = self.chunks.get(&(chunk_x + 1, chunk_z));
+        let chunk_nz = self.chunks.get(&(chunk_x, chunk_z - 1));
+        let chunk_pz = self.chunks.get(&(chunk_x, chunk_z + 1));
+
+        // Pre-compute biome map to avoid expensive noise calculations per-block
+        let mut biome_map: [[Option<crate::biome::Biome>; CHUNK_SIZE as usize];
+            CHUNK_SIZE as usize] = [[None; CHUNK_SIZE as usize]; CHUNK_SIZE as usize];
+
+        // Helper to get block from cached chunks
+        let get_block_fast = |wx: i32, wy: i32, wz: i32| -> BlockType {
+            if wy < 0 || wy >= WORLD_HEIGHT {
+                return BlockType::Air;
+            }
+
+            let cx = if wx >= 0 {
+                wx / CHUNK_SIZE
+            } else {
+                (wx - CHUNK_SIZE + 1) / CHUNK_SIZE
+            };
+            let cz = if wz >= 0 {
+                wz / CHUNK_SIZE
+            } else {
+                (wz - CHUNK_SIZE + 1) / CHUNK_SIZE
+            };
+            let lx = wx.rem_euclid(CHUNK_SIZE);
+            let lz = wz.rem_euclid(CHUNK_SIZE);
+
+            let chunk = if cx == chunk_x && cz == chunk_z {
+                chunk_center
+            } else if cx == chunk_x - 1 && cz == chunk_z {
+                chunk_nx
+            } else if cx == chunk_x + 1 && cz == chunk_z {
+                chunk_px
+            } else if cx == chunk_x && cz == chunk_z - 1 {
+                chunk_nz
+            } else if cx == chunk_x && cz == chunk_z + 1 {
+                chunk_pz
+            } else {
+                return BlockType::Air;
+            };
+
+            chunk
+                .map(|c| c.get_block(lx, wy, lz))
+                .unwrap_or(BlockType::Air)
+        };
+
         for lx in 0..CHUNK_SIZE {
             for ly in 0..SUBCHUNK_HEIGHT {
                 for lz in 0..CHUNK_SIZE {
                     let y = base_y + ly;
-                    let block = self.get_block(base_x + lx, y, base_z + lz);
+                    let world_x = base_x + lx;
+                    let world_z = base_z + lz;
+                    let block = get_block_fast(world_x, y, world_z);
 
                     if block == BlockType::Air {
                         continue;
@@ -1056,27 +1120,39 @@ impl World {
                         (&mut vertices, &mut indices)
                     };
 
-                    let world_x = base_x + lx;
-                    let world_z = base_z + lz;
-
-                    // Check all 6 neighbors
+                    // Check all 6 neighbors using cached chunks
                     let neighbors = [
-                        (world_x - 1, y, world_z),
-                        (world_x + 1, y, world_z),
-                        (world_x, y - 1, world_z),
-                        (world_x, y + 1, world_z),
-                        (world_x, y, world_z - 1),
-                        (world_x, y, world_z + 1),
+                        get_block_fast(world_x - 1, y, world_z),
+                        get_block_fast(world_x + 1, y, world_z),
+                        get_block_fast(world_x, y - 1, world_z),
+                        get_block_fast(world_x, y + 1, world_z),
+                        get_block_fast(world_x, y, world_z - 1),
+                        get_block_fast(world_x, y, world_z + 1),
                     ];
 
-                    for (i, (nx, ny, nz)) in neighbors.iter().enumerate() {
-                        let neighbor_block = self.get_block(*nx, *ny, *nz);
-                        if block.should_render_face_against(neighbor_block) {
+                    for (i, neighbor_block) in neighbors.iter().enumerate() {
+                        if block.should_render_face_against(*neighbor_block) {
+                            // Compute biome once per block if needed (grass/leaves)
+                            let needs_biome =
+                                block == BlockType::Grass || block == BlockType::Leaves;
+                            let biome = if needs_biome {
+                                // Check cache first
+                                let lx_idx = lx as usize;
+                                let lz_idx = lz as usize;
+                                if biome_map[lx_idx][lz_idx].is_none() {
+                                    biome_map[lx_idx][lz_idx] =
+                                        Some(self.get_biome(world_x, world_z));
+                                }
+                                biome_map[lx_idx][lz_idx]
+                            } else {
+                                None
+                            };
+
                             let color = match i {
                                 2 => block.bottom_color(),
                                 3 => {
                                     if block == BlockType::Grass {
-                                        self.get_biome(world_x, world_z).grass_color()
+                                        biome.unwrap().grass_color()
                                     } else {
                                         block.top_color()
                                     }
@@ -1085,7 +1161,7 @@ impl World {
                                     if block == BlockType::Grass {
                                         block.color()
                                     } else if block == BlockType::Leaves {
-                                        self.get_biome(world_x, world_z).leaves_color()
+                                        biome.unwrap().leaves_color()
                                     } else {
                                         block.color()
                                     }

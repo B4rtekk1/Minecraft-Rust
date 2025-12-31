@@ -6,13 +6,16 @@
 struct Uniforms {
     /// Standard view-projection matrix (not used in shadow pass)
     view_proj: mat4x4<f32>,
+    /// Inverse view-projection matrix
+    inv_view_proj: mat4x4<f32>,
     /// View-projection matrix from the sun's perspective
     sun_view_proj: mat4x4<f32>,
     camera_pos: vec3<f32>,
     time: f32,
     sun_position: vec3<f32>,
-    _padding: f32,
+    is_underwater: f32,
 };
+
 
 @group(0) @binding(0)
 var<uniform> uniforms: Uniforms;

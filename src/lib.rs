@@ -2,6 +2,8 @@ pub mod biome;
 pub mod block;
 pub mod camera;
 pub mod chunk;
+pub mod chunk_generator;
+pub mod chunk_loader;
 pub mod constants;
 pub mod frustum;
 pub mod input;
