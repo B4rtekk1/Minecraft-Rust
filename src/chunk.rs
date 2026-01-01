@@ -15,6 +15,7 @@ pub struct SubChunk {
     pub water_index_buffer: Option<wgpu::Buffer>,
     pub num_water_indices: u32,
     pub aabb: AABB,
+    pub is_fully_opaque: bool,
 }
 
 impl SubChunk {
@@ -27,6 +28,7 @@ impl SubChunk {
             blocks: [[[BlockType::Air; CHUNK_SIZE as usize]; SUBCHUNK_HEIGHT as usize];
                 CHUNK_SIZE as usize],
             is_empty: true,
+            is_fully_opaque: false,
             mesh_dirty: true,
             vertex_buffer: None,
             index_buffer: None,
@@ -73,6 +75,20 @@ impl SubChunk {
                 }
             }
         }
+    }
+
+    pub fn check_fully_opaque(&mut self) {
+        for x in 0..CHUNK_SIZE as usize {
+            for y in 0..SUBCHUNK_HEIGHT as usize {
+                for z in 0..CHUNK_SIZE as usize {
+                    if !self.blocks[x][y][z].is_solid_opaque() {
+                        self.is_fully_opaque = false;
+                        return;
+                    }
+                }
+            }
+        }
+        self.is_fully_opaque = true;
     }
 }
 

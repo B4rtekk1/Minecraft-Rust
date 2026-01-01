@@ -1,7 +1,5 @@
+use std::sync::Arc;
 use std::time::Instant;
-use std::{num::NonZeroU32, sync::Arc};
-
-use rayon::prelude::*;
 
 use bytemuck;
 use cgmath::{InnerSpace, Matrix4, Rad, SquareMatrix};
@@ -24,7 +22,7 @@ mod ui;
 use clap::Parser;
 use multiplayer::network::{connect_to_server, update_network};
 use multiplayer::player::{RemotePlayer, queue_remote_players_labels};
-use multiplayer::protocol::{Packet, decode_pitch, decode_yaw};
+use multiplayer::protocol::Packet;
 use multiplayer::tcp::{TcpClient, TcpServer};
 use std::collections::HashMap;
 // use tokio::sync::mpsc;
@@ -45,11 +43,11 @@ struct Args {
 
 use render3d::chunk_loader::ChunkLoader;
 use render3d::{
-    BlockType, CHUNK_SIZE, Camera, DEFAULT_WORLD_FILE, DiggingState, GENERATION_DISTANCE,
-    InputState, MAX_CHUNKS_PER_FRAME, NUM_SUBCHUNKS, RENDER_DISTANCE, SUBCHUNK_HEIGHT, SavedWorld,
-    TEXTURE_SIZE, Uniforms, Vertex, World, build_crosshair, build_player_model,
-    extract_frustum_planes, generate_texture_atlas, load_texture_atlas_from_file, load_world,
-    save_world,
+    ASYNC_WORKER_COUNT, BlockType, CHUNK_SIZE, Camera, DEFAULT_WORLD_FILE, DiggingState,
+    GENERATION_DISTANCE, InputState, MAX_CHUNKS_PER_FRAME, MAX_MESH_BUILDS_PER_FRAME,
+    NUM_SUBCHUNKS, RENDER_DISTANCE, SUBCHUNK_HEIGHT, SavedWorld, TEXTURE_SIZE, Uniforms, Vertex,
+    World, build_crosshair, build_player_model, extract_frustum_planes, generate_texture_atlas,
+    load_texture_atlas_from_file, load_world, save_world,
 };
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -86,7 +84,7 @@ struct State {
     shadow_texture_view: wgpu::TextureView,
     #[allow(dead_code)]
     shadow_sampler: wgpu::Sampler,
-    world: World,
+    world: Arc<parking_lot::RwLock<World>>,
     camera: Camera,
     input: InputState,
     digging: DiggingState,
@@ -148,6 +146,7 @@ struct State {
     fps_buffer: glyphon::Buffer,
     menu_buffer: glyphon::Buffer,
     player_label_buffers: Vec<glyphon::Buffer>,
+    mesh_loader: render3d::MeshLoader,
 }
 
 impl State {
@@ -1043,13 +1042,14 @@ impl State {
         });
 
         println!("Generating world...");
-        let world = World::new();
-        let spawn = world.find_spawn_point();
+        let world = Arc::new(parking_lot::RwLock::new(World::new()));
+        let spawn = world.read().find_spawn_point();
         let camera = Camera::new(spawn);
         println!("World generated! Spawn: {:?}", spawn);
 
-        // Initialize async chunk loader with world seed
-        let chunk_loader = ChunkLoader::new(world.seed);
+        let seed = world.read().seed;
+        let chunk_loader = ChunkLoader::new(seed);
+        let mesh_loader = render3d::MeshLoader::new(Arc::clone(&world), ASYNC_WORKER_COUNT);
 
         let (crosshair_vertices, crosshair_indices) = build_crosshair();
         let num_crosshair_indices = crosshair_indices.len() as u32;
@@ -1120,6 +1120,7 @@ impl State {
             shadow_texture_view,
             shadow_sampler,
             world,
+            mesh_loader,
             camera,
             input: InputState::default(),
             digging: DiggingState::default(),
@@ -1311,19 +1312,117 @@ impl State {
         }
     }
 
+    fn update_subchunk_mesh(&mut self, result: render3d::mesh_loader::MeshResult) {
+        let mut world = self.world.write();
+        if let Some(chunk) = world.chunks.get_mut(&(result.cx, result.cz)) {
+            let subchunk = &mut chunk.subchunks[result.sy as usize];
+
+            subchunk.num_indices = result.terrain.1.len() as u32;
+            if !result.terrain.0.is_empty() {
+                let vertex_data: &[u8] = bytemuck::cast_slice(&result.terrain.0);
+                let index_data: &[u8] = bytemuck::cast_slice(&result.terrain.1);
+
+                let needs_new_vertex_buffer = subchunk
+                    .vertex_buffer
+                    .as_ref()
+                    .map(|b| b.size() < vertex_data.len() as u64)
+                    .unwrap_or(true);
+                let needs_new_index_buffer = subchunk
+                    .index_buffer
+                    .as_ref()
+                    .map(|b| b.size() < index_data.len() as u64)
+                    .unwrap_or(true);
+
+                if needs_new_vertex_buffer {
+                    subchunk.vertex_buffer =
+                        Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("Subchunk Vertex Buffer"),
+                            size: vertex_data.len() as u64,
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        }));
+                }
+                if needs_new_index_buffer {
+                    subchunk.index_buffer =
+                        Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("Subchunk Index Buffer"),
+                            size: index_data.len() as u64,
+                            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        }));
+                }
+
+                self.queue
+                    .write_buffer(subchunk.vertex_buffer.as_ref().unwrap(), 0, vertex_data);
+                self.queue
+                    .write_buffer(subchunk.index_buffer.as_ref().unwrap(), 0, index_data);
+            }
+
+            subchunk.num_water_indices = result.water.1.len() as u32;
+            if !result.water.0.is_empty() {
+                let vertex_data: &[u8] = bytemuck::cast_slice(&result.water.0);
+                let index_data: &[u8] = bytemuck::cast_slice(&result.water.1);
+
+                let needs_new_vertex_buffer = subchunk
+                    .water_vertex_buffer
+                    .as_ref()
+                    .map(|b| b.size() < vertex_data.len() as u64)
+                    .unwrap_or(true);
+                let needs_new_index_buffer = subchunk
+                    .water_index_buffer
+                    .as_ref()
+                    .map(|b| b.size() < index_data.len() as u64)
+                    .unwrap_or(true);
+
+                if needs_new_vertex_buffer {
+                    subchunk.water_vertex_buffer =
+                        Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("Subchunk Water Vertex Buffer"),
+                            size: vertex_data.len() as u64,
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        }));
+                }
+                if needs_new_index_buffer {
+                    subchunk.water_index_buffer =
+                        Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("Subchunk Water Index Buffer"),
+                            size: index_data.len() as u64,
+                            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        }));
+                }
+
+                self.queue.write_buffer(
+                    subchunk.water_vertex_buffer.as_ref().unwrap(),
+                    0,
+                    vertex_data,
+                );
+                self.queue.write_buffer(
+                    subchunk.water_index_buffer.as_ref().unwrap(),
+                    0,
+                    index_data,
+                );
+            }
+
+            subchunk.mesh_dirty = false;
+        }
+    }
+
     fn update(&mut self) {
         self.update_network();
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
-        self.camera.update(&self.world, dt, &self.input);
+        self.camera.update(&*self.world.read(), dt, &self.input);
 
         // Poll for completed async chunks
         let completed_chunks = self.chunk_loader.poll_results(MAX_CHUNKS_PER_FRAME);
-        for result in completed_chunks {
-            self.world
-                .chunks
-                .insert((result.cx, result.cz), result.chunk);
+        if !completed_chunks.is_empty() {
+            let mut world = self.world.write();
+            for result in completed_chunks {
+                world.chunks.insert((result.cx, result.cz), result.chunk);
+            }
         }
 
         // Calculate player chunk position
@@ -1332,37 +1431,52 @@ impl State {
 
         // Request async generation for missing chunks (sorted by priority/distance)
         let mut requests = Vec::new();
-        for cx in (player_cx - GENERATION_DISTANCE)..=(player_cx + GENERATION_DISTANCE) {
-            for cz in (player_cz - GENERATION_DISTANCE)..=(player_cz + GENERATION_DISTANCE) {
-                if !self.world.chunks.contains_key(&(cx, cz))
-                    && !self.chunk_loader.is_pending(cx, cz)
-                {
-                    let dx = cx - player_cx;
-                    let dz = cz - player_cz;
-                    let priority = dx * dx + dz * dz; // Distance squared
-                    requests.push((cx, cz, priority));
+        {
+            let world = self.world.read();
+            for cx in (player_cx - GENERATION_DISTANCE)..=(player_cx + GENERATION_DISTANCE) {
+                for cz in (player_cz - GENERATION_DISTANCE)..=(player_cz + GENERATION_DISTANCE) {
+                    if !world.chunks.contains_key(&(cx, cz))
+                        && !self.chunk_loader.is_pending(cx, cz)
+                    {
+                        let dx = cx - player_cx;
+                        let dz = cz - player_cz;
+                        let priority = dx * dx + dz * dz; // Distance squared
+                        requests.push((cx, cz, priority));
+                    }
                 }
             }
         }
-        self.chunk_loader.request_chunks(&requests);
+
+        // Send requests to chunk loader
+        requests.sort_by_key(|&(_, _, priority)| priority);
+        for (cx, cz, priority) in requests.into_iter().take(MAX_CHUNKS_PER_FRAME) {
+            self.chunk_loader.request_chunk(cx, cz, priority);
+        }
 
         // Still run immediate sync chunk loading for spawn area and unloading
         self.world
+            .write()
             .update_chunks_around_player(self.camera.position.x, self.camera.position.z);
 
         self.update_coords_ui();
 
         if self.mouse_captured && self.input.left_mouse {
-            if let Some((bx, by, bz, _, _, _)) = self.camera.raycast(&self.world, 5.0) {
+            let raycast_result = {
+                let world = self.world.read();
+                self.camera.raycast(&*world, 5.0)
+            };
+            if let Some((bx, by, bz, _, _, _)) = raycast_result {
                 let target = (bx, by, bz);
-                let block = self.world.get_block(bx, by, bz);
+                let mut world = self.world.write();
+                let block = world.get_block(bx, by, bz);
                 let break_time = block.break_time();
 
                 if break_time.is_finite() && break_time > 0.0 {
                     if self.digging.target == Some(target) {
                         self.digging.progress += dt;
                         if self.digging.progress >= break_time {
-                            self.world.set_block_player(bx, by, bz, BlockType::Air);
+                            world.set_block_player(bx, by, bz, BlockType::Air);
+                            drop(world); // Release borrow before calling mark_chunk_dirty
                             self.mark_chunk_dirty(bx, by, bz);
                             self.digging.target = None;
                             self.digging.progress = 0.0;
@@ -1370,16 +1484,17 @@ impl State {
                     } else {
                         self.digging.target = Some(target);
                         self.digging.progress = 0.0;
-                        self.digging.break_time = break_time;
                     }
                 }
-            } else {
-                self.digging.target = None;
-                self.digging.progress = 0.0;
             }
         } else {
             self.digging.target = None;
             self.digging.progress = 0.0;
+        }
+
+        // Poll for completed async meshes
+        while let Some(result) = self.mesh_loader.poll_result() {
+            self.update_subchunk_mesh(result);
         }
     }
 
@@ -1494,11 +1609,13 @@ impl State {
 
         // Check if camera is underwater
         let eye_pos = self.camera.eye_position();
-        let eye_block = self.world.get_block(
+        let world = self.world.read();
+        let eye_block = world.get_block(
             eye_pos.x.floor() as i32,
             eye_pos.y.floor() as i32,
             eye_pos.z.floor() as i32,
         );
+        drop(world);
         let is_underwater = if eye_block == BlockType::Water {
             1.0
         } else {
@@ -1547,10 +1664,11 @@ impl State {
             shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
 
             let shadow_dist = RENDER_DISTANCE;
+            let world = self.world.read();
             for cx in (player_cx - shadow_dist)..=(player_cx + shadow_dist) {
                 for cz in (player_cz - shadow_dist)..=(player_cz + shadow_dist) {
-                    if let Some(chunk) = self.world.chunks.get(&(cx, cz)) {
-                        for subchunk in &chunk.subchunks {
+                    if let Some(chunk) = world.chunks.get(&(cx, cz)) {
+                        for (subchunk_idx, subchunk) in chunk.subchunks.iter().enumerate() {
                             if subchunk.is_empty || subchunk.num_indices == 0 {
                                 continue;
                             }
@@ -1558,6 +1676,11 @@ impl State {
                             if !subchunk.aabb.is_visible(&shadow_frustum) {
                                 continue;
                             }
+                            // Occlusion culling
+                            if world.is_subchunk_occluded(cx, cz, subchunk_idx as i32) {
+                                continue;
+                            }
+
                             if let (Some(vb), Some(ib)) =
                                 (&subchunk.vertex_buffer, &subchunk.index_buffer)
                             {
@@ -1573,138 +1696,41 @@ impl State {
         }
 
         // Optimization: Pre-allocate since we limit to max_meshes_per_frame
-        let mut meshes_to_build: Vec<(i32, i32, i32)> = Vec::with_capacity(8);
+        let mut meshes_to_request: Vec<(i32, i32, i32)> = Vec::with_capacity(8);
 
-        for cx in (player_cx - RENDER_DISTANCE)..=(player_cx + RENDER_DISTANCE) {
-            for cz in (player_cz - RENDER_DISTANCE)..=(player_cz + RENDER_DISTANCE) {
-                if let Some(chunk) = self.world.chunks.get(&(cx, cz)) {
-                    for (sy, subchunk) in chunk.subchunks.iter().enumerate() {
-                        if subchunk.mesh_dirty && !subchunk.is_empty {
-                            meshes_to_build.push((cx, cz, sy as i32));
+        {
+            let world = self.world.read();
+            for cx in (player_cx - RENDER_DISTANCE)..=(player_cx + RENDER_DISTANCE) {
+                for cz in (player_cz - RENDER_DISTANCE)..=(player_cz + RENDER_DISTANCE) {
+                    if let Some(chunk) = world.chunks.get(&(cx, cz)) {
+                        for (sy, subchunk) in chunk.subchunks.iter().enumerate() {
+                            if subchunk.mesh_dirty && !subchunk.is_empty {
+                                meshes_to_request.push((cx, cz, sy as i32));
+                            }
                         }
                     }
                 }
             }
         }
 
-        let max_meshes_per_frame = 8;
-        meshes_to_build.truncate(max_meshes_per_frame);
-        let built_meshes: Vec<(
-            i32,
-            i32,
-            i32,
-            (Vec<Vertex>, Vec<u32>),
-            (Vec<Vertex>, Vec<u32>),
-        )> = meshes_to_build
-            .par_iter()
-            .map(|&(cx, cz, sy)| {
-                let meshes = self.world.build_subchunk_mesh(cx, cz, sy);
-                (cx, cz, sy, meshes.0, meshes.1)
-            })
-            .collect();
+        let max_meshes_per_frame = MAX_MESH_BUILDS_PER_FRAME;
+        // Prioritize meshes closer to the player
+        meshes_to_request.sort_by_key(|&(cx, cz, _sy)| {
+            let dx = cx - player_cx;
+            let dz = cz - player_cz;
+            dx * dx + dz * dz
+        });
+        meshes_to_request.truncate(max_meshes_per_frame);
 
-        for (cx, cz, sy, (vertices, indices), (w_vertices, w_indices)) in built_meshes {
-            if let Some(chunk) = self.world.chunks.get_mut(&(cx, cz)) {
-                let subchunk = &mut chunk.subchunks[sy as usize];
-
-                subchunk.num_indices = indices.len() as u32;
-                if !vertices.is_empty() {
-                    let vertex_data: &[u8] = bytemuck::cast_slice(&vertices);
-                    let index_data: &[u8] = bytemuck::cast_slice(&indices);
-
-                    // Reuse buffer if size matches, otherwise create new one
-                    let needs_new_vertex_buffer = subchunk
-                        .vertex_buffer
-                        .as_ref()
-                        .map(|b| b.size() < vertex_data.len() as u64)
-                        .unwrap_or(true);
-                    let needs_new_index_buffer = subchunk
-                        .index_buffer
-                        .as_ref()
-                        .map(|b| b.size() < index_data.len() as u64)
-                        .unwrap_or(true);
-
-                    if needs_new_vertex_buffer {
-                        subchunk.vertex_buffer =
-                            Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                                label: Some("Subchunk Vertex Buffer"),
-                                size: vertex_data.len() as u64,
-                                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                                mapped_at_creation: false,
-                            }));
-                    }
-                    if needs_new_index_buffer {
-                        subchunk.index_buffer =
-                            Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                                label: Some("Subchunk Index Buffer"),
-                                size: index_data.len() as u64,
-                                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-                                mapped_at_creation: false,
-                            }));
-                    }
-
-                    // Write data to GPU asynchronously
-                    if let Some(vb) = &subchunk.vertex_buffer {
-                        self.queue.write_buffer(vb, 0, vertex_data);
-                    }
-                    if let Some(ib) = &subchunk.index_buffer {
-                        self.queue.write_buffer(ib, 0, index_data);
-                    }
-                } else {
-                    subchunk.vertex_buffer = None;
-                    subchunk.index_buffer = None;
-                }
-
-                subchunk.num_water_indices = w_indices.len() as u32;
-                if !w_vertices.is_empty() {
-                    let vertex_data: &[u8] = bytemuck::cast_slice(&w_vertices);
-                    let index_data: &[u8] = bytemuck::cast_slice(&w_indices);
-
-                    let needs_new_vertex_buffer = subchunk
-                        .water_vertex_buffer
-                        .as_ref()
-                        .map(|b| b.size() < vertex_data.len() as u64)
-                        .unwrap_or(true);
-                    let needs_new_index_buffer = subchunk
-                        .water_index_buffer
-                        .as_ref()
-                        .map(|b| b.size() < index_data.len() as u64)
-                        .unwrap_or(true);
-
-                    if needs_new_vertex_buffer {
-                        subchunk.water_vertex_buffer =
-                            Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                                label: Some("Water Vertex Buffer"),
-                                size: vertex_data.len() as u64,
-                                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                                mapped_at_creation: false,
-                            }));
-                    }
-                    if needs_new_index_buffer {
-                        subchunk.water_index_buffer =
-                            Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                                label: Some("Water Index Buffer"),
-                                size: index_data.len() as u64,
-                                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-                                mapped_at_creation: false,
-                            }));
-                    }
-
-                    if let Some(vb) = &subchunk.water_vertex_buffer {
-                        self.queue.write_buffer(vb, 0, vertex_data);
-                    }
-                    if let Some(ib) = &subchunk.water_index_buffer {
-                        self.queue.write_buffer(ib, 0, index_data);
-                    }
-                } else {
-                    subchunk.water_vertex_buffer = None;
-                    subchunk.water_index_buffer = None;
-                }
-
-                subchunk.mesh_dirty = false;
+        for (cx, cz, sy) in meshes_to_request {
+            self.mesh_loader.request_mesh(cx, cz, sy);
+            // Mark as dirty = false to avoid multiple requests while pending
+            // This is a bit of a hack, we might want a "pending_mesh" flag
+            let mut world = self.world.write();
+            if let Some(chunk) = world.chunks.get_mut(&(cx, cz)) {
+                chunk.subchunks[sy as usize].mesh_dirty = false;
             }
         }
-
         let mut chunks_rendered = 0u32;
         let mut subchunks_rendered = 0u32;
 
@@ -1716,55 +1742,70 @@ impl State {
         let sunset_sky = (1.0, 0.5, 0.2);
         let night_sky = (0.001, 0.001, 0.005);
 
-        let sky_r = (day_sky.0 * day_factor
+        let sky_r: f32 = (day_sky.0 * day_factor
             + sunset_sky.0 * sunset_factor * 0.5
             + night_sky.0 * night_factor)
             .min(1.0);
-        let sky_g = (day_sky.1 * day_factor
+        let sky_g: f32 = (day_sky.1 * day_factor
             + sunset_sky.1 * sunset_factor * 0.5
             + night_sky.1 * night_factor)
             .min(1.0);
-        let sky_b = (day_sky.2 * day_factor
+        let sky_b: f32 = (day_sky.2 * day_factor
             + sunset_sky.2 * sunset_factor * 0.5
             + night_sky.2 * night_factor)
             .min(1.0);
 
         // Collect visible subchunks first to avoid borrowing issues
-        let mut visible_terrain: Vec<(&wgpu::Buffer, &wgpu::Buffer, u32)> = Vec::new();
-        let mut visible_water: Vec<(&wgpu::Buffer, &wgpu::Buffer, u32)> = Vec::new();
+        let mut visible_terrain: Vec<(wgpu::Buffer, wgpu::Buffer, u32)> = Vec::new();
+        let mut visible_water: Vec<(wgpu::Buffer, wgpu::Buffer, u32)> = Vec::new();
 
-        for cx in (player_cx - RENDER_DISTANCE)..=(player_cx + RENDER_DISTANCE) {
-            for cz in (player_cz - RENDER_DISTANCE)..=(player_cz + RENDER_DISTANCE) {
-                if let Some(chunk) = self.world.chunks.get(&(cx, cz)) {
-                    let mut chunk_visible = false;
-                    for subchunk in &chunk.subchunks {
-                        if subchunk.is_empty {
-                            continue;
-                        }
-                        if !subchunk.aabb.is_visible(&frustum_planes) {
-                            continue;
-                        }
-                        // Collect terrain geometry
-                        if subchunk.num_indices > 0 {
-                            if let (Some(vb), Some(ib)) =
-                                (&subchunk.vertex_buffer, &subchunk.index_buffer)
-                            {
-                                visible_terrain.push((vb, ib, subchunk.num_indices));
-                                subchunks_rendered += 1;
-                                chunk_visible = true;
+        {
+            let world = self.world.read();
+            for cx in (player_cx - RENDER_DISTANCE)..=(player_cx + RENDER_DISTANCE) {
+                for cz in (player_cz - RENDER_DISTANCE)..=(player_cz + RENDER_DISTANCE) {
+                    if let Some(chunk) = world.chunks.get(&(cx, cz)) {
+                        let mut chunk_visible = false;
+                        for (subchunk_idx, subchunk) in chunk.subchunks.iter().enumerate() {
+                            if subchunk.is_empty {
+                                continue;
+                            }
+                            if !subchunk.aabb.is_visible(&frustum_planes) {
+                                continue;
+                            }
+                            // Occlusion culling
+                            if world.is_subchunk_occluded(cx, cz, subchunk_idx as i32) {
+                                continue;
+                            }
+                            // Collect terrain geometry
+                            if subchunk.num_indices > 0 {
+                                if let (Some(vb), Some(ib)) =
+                                    (&subchunk.vertex_buffer, &subchunk.index_buffer)
+                                {
+                                    visible_terrain.push((
+                                        vb.clone(),
+                                        ib.clone(),
+                                        subchunk.num_indices,
+                                    ));
+                                    subchunks_rendered += 1;
+                                    chunk_visible = true;
+                                }
+                            }
+                            // Collect water geometry
+                            if subchunk.num_water_indices > 0 {
+                                if let (Some(vb), Some(ib)) =
+                                    (&subchunk.water_vertex_buffer, &subchunk.water_index_buffer)
+                                {
+                                    visible_water.push((
+                                        vb.clone(),
+                                        ib.clone(),
+                                        subchunk.num_water_indices,
+                                    ));
+                                }
                             }
                         }
-                        // Collect water geometry
-                        if subchunk.num_water_indices > 0 {
-                            if let (Some(vb), Some(ib)) =
-                                (&subchunk.water_vertex_buffer, &subchunk.water_index_buffer)
-                            {
-                                visible_water.push((vb, ib, subchunk.num_water_indices));
-                            }
+                        if chunk_visible {
+                            chunks_rendered += 1;
                         }
-                    }
-                    if chunk_visible {
-                        chunks_rendered += 1;
                     }
                 }
             }
@@ -2378,8 +2419,11 @@ impl State {
         }
 
         if button == MouseButton::Right && pressed {
-            if let Some((_, _, _, px, py, pz)) = self.camera.raycast(&self.world, 5.0) {
-                self.world.set_block_player(px, py, pz, BlockType::Stone);
+            let target = self.camera.raycast(&*self.world.read(), 5.0);
+            if let Some((_, _, _, px, py, pz)) = target {
+                self.world
+                    .write()
+                    .set_block_player(px, py, pz, BlockType::Stone);
                 self.mark_chunk_dirty(px, py, pz);
             }
         }
@@ -2390,51 +2434,53 @@ impl State {
         let cz = (z as f32 / CHUNK_SIZE as f32).floor() as i32;
         let sy = y / SUBCHUNK_HEIGHT;
 
-        if let Some(chunk) = self.world.chunks.get_mut(&(cx, cz)) {
+        let mut world = self.world.write();
+
+        if let Some(chunk) = world.chunks.get_mut(&(cx, cz)) {
             if sy >= 0 && (sy as usize) < chunk.subchunks.len() {
                 chunk.subchunks[sy as usize].mesh_dirty = true;
             }
         }
 
-        let lx = x % CHUNK_SIZE;
-        let lz = z % CHUNK_SIZE;
-        let ly = y % SUBCHUNK_HEIGHT;
+        let lx = x.rem_euclid(CHUNK_SIZE);
+        let lz = z.rem_euclid(CHUNK_SIZE);
+        let ly = y.rem_euclid(SUBCHUNK_HEIGHT);
 
         if lx == 0 {
-            if let Some(chunk) = self.world.chunks.get_mut(&(cx - 1, cz)) {
+            if let Some(chunk) = world.chunks.get_mut(&(cx - 1, cz)) {
                 if sy >= 0 && (sy as usize) < chunk.subchunks.len() {
                     chunk.subchunks[sy as usize].mesh_dirty = true;
                 }
             }
         }
         if lx == CHUNK_SIZE - 1 {
-            if let Some(chunk) = self.world.chunks.get_mut(&(cx + 1, cz)) {
+            if let Some(chunk) = world.chunks.get_mut(&(cx + 1, cz)) {
                 if sy >= 0 && (sy as usize) < chunk.subchunks.len() {
                     chunk.subchunks[sy as usize].mesh_dirty = true;
                 }
             }
         }
         if lz == 0 {
-            if let Some(chunk) = self.world.chunks.get_mut(&(cx, cz - 1)) {
+            if let Some(chunk) = world.chunks.get_mut(&(cx, cz - 1)) {
                 if sy >= 0 && (sy as usize) < chunk.subchunks.len() {
                     chunk.subchunks[sy as usize].mesh_dirty = true;
                 }
             }
         }
         if lz == CHUNK_SIZE - 1 {
-            if let Some(chunk) = self.world.chunks.get_mut(&(cx, cz + 1)) {
+            if let Some(chunk) = world.chunks.get_mut(&(cx, cz + 1)) {
                 if sy >= 0 && (sy as usize) < chunk.subchunks.len() {
                     chunk.subchunks[sy as usize].mesh_dirty = true;
                 }
             }
         }
         if ly == 0 && sy > 0 {
-            if let Some(chunk) = self.world.chunks.get_mut(&(cx, cz)) {
+            if let Some(chunk) = world.chunks.get_mut(&(cx, cz)) {
                 chunk.subchunks[(sy - 1) as usize].mesh_dirty = true;
             }
         }
-        if ly == SUBCHUNK_HEIGHT - 1 && sy < NUM_SUBCHUNKS - 1 {
-            if let Some(chunk) = self.world.chunks.get_mut(&(cx, cz)) {
+        if ly == SUBCHUNK_HEIGHT - 1 && sy < NUM_SUBCHUNKS as i32 - 1 {
+            if let Some(chunk) = world.chunks.get_mut(&(cx, cz)) {
                 chunk.subchunks[(sy + 1) as usize].mesh_dirty = true;
             }
         }
@@ -2697,9 +2743,10 @@ fn main() {
                                 println!("Reflection mode: {}", mode_name);
                             }
                             KeyCode::F5 if pressed => {
+                                let world = state.world.read();
                                 let saved = SavedWorld::from_world(
-                                    &state.world.chunks,
-                                    state.world.seed,
+                                    &world.chunks,
+                                    world.seed,
                                     (
                                         state.camera.position.x,
                                         state.camera.position.y,
@@ -2707,56 +2754,64 @@ fn main() {
                                     ),
                                     (state.camera.yaw, state.camera.pitch),
                                 );
-                                match save_world(DEFAULT_WORLD_FILE, &saved) {
-                                    Ok(_) => println!("World saved to {}", DEFAULT_WORLD_FILE),
-                                    Err(e) => println!("Error saving world: {}", e),
+                                if let Err(e) = save_world(DEFAULT_WORLD_FILE, &saved) {
+                                    eprintln!("Failed to save world: {}", e);
+                                } else {
+                                    println!("World saved to {}", DEFAULT_WORLD_FILE);
                                 }
                             }
                             KeyCode::F9 if pressed => match load_world(DEFAULT_WORLD_FILE) {
                                 Ok(saved) => {
                                     println!("Regenerating world with seed {}...", saved.seed);
-                                    state.world = World::new_with_seed(saved.seed);
+                                    {
+                                        let mut world = state.world.write();
+                                        *world = World::new_with_seed(saved.seed);
+                                    }
                                     state.camera.position.x = saved.player_x;
                                     state.camera.position.y = saved.player_y;
                                     state.camera.position.z = saved.player_z;
                                     state.camera.yaw = saved.player_yaw;
                                     state.camera.pitch = saved.player_pitch;
 
-                                    for chunk_data in &saved.chunks {
-                                        let cx = chunk_data.cx;
-                                        let cz = chunk_data.cz;
+                                    {
+                                        let mut world = state.world.write();
+                                        for chunk_data in &saved.chunks {
+                                            let cx = chunk_data.cx;
+                                            let cz = chunk_data.cz;
 
-                                        for (&sy, block_data) in &chunk_data.subchunks {
-                                            if let Some(chunk) =
-                                                state.world.chunks.get_mut(&(cx, cz))
-                                            {
-                                                if (sy as usize) < chunk.subchunks.len() {
-                                                    let subchunk =
-                                                        &mut chunk.subchunks[sy as usize];
-                                                    let mut n = 0;
-                                                    for lx in 0..CHUNK_SIZE as usize {
-                                                        for ly in 0..SUBCHUNK_HEIGHT as usize {
-                                                            for lz in 0..CHUNK_SIZE as usize {
-                                                                if n < block_data.len() {
-                                                                    subchunk.blocks[lx][ly][lz] =
-                                                                        block_data[n];
-                                                                    n += 1;
+                                            for (&sy, block_data) in &chunk_data.subchunks {
+                                                if let Some(chunk) = world.chunks.get_mut(&(cx, cz))
+                                                {
+                                                    if (sy as usize) < chunk.subchunks.len() {
+                                                        let subchunk =
+                                                            &mut chunk.subchunks[sy as usize];
+                                                        let mut n = 0;
+                                                        for lx in 0..CHUNK_SIZE as usize {
+                                                            for ly in 0..SUBCHUNK_HEIGHT as usize {
+                                                                for lz in 0..CHUNK_SIZE as usize {
+                                                                    if n < block_data.len() {
+                                                                        subchunk.blocks[lx][ly]
+                                                                            [lz] = block_data[n];
+                                                                        n += 1;
+                                                                    }
                                                                 }
                                                             }
                                                         }
+                                                        subchunk.is_empty = false;
+                                                        subchunk.mesh_dirty = true;
                                                     }
-                                                    subchunk.is_empty = false;
-                                                    subchunk.mesh_dirty = true;
+                                                    chunk.player_modified = true;
                                                 }
-                                                chunk.player_modified = true;
                                             }
                                         }
                                     }
-
                                     // Mark all neighbor chunks as dirty to ensure geometry joins correctly
-                                    for chunk in state.world.chunks.values_mut() {
-                                        for subchunk in &mut chunk.subchunks {
-                                            subchunk.mesh_dirty = true;
+                                    {
+                                        let mut world = state.world.write();
+                                        for chunk in world.chunks.values_mut() {
+                                            for subchunk in &mut chunk.subchunks {
+                                                subchunk.mesh_dirty = true;
+                                            }
                                         }
                                     }
 

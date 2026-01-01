@@ -24,3 +24,4 @@ clap = { version = "4.4", features = ["derive"] }
 rayon = "1.10"
 fastnoise-lite = "1.1"
 crossbeam-channel = "0.5"
+parking_lot = "0.12"

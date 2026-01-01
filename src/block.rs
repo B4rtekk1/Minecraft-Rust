@@ -75,6 +75,10 @@ impl BlockType {
         )
     }
 
+    pub fn is_solid_opaque(&self) -> bool {
+        !self.is_transparent() && *self != BlockType::Air
+    }
+
     pub fn should_render_face_against(&self, neighbor: BlockType) -> bool {
         // Air always exposes faces
         if neighbor == BlockType::Air {

@@ -2230,6 +2230,7 @@ dependencies = [
  "glyphon",
  "image",
  "noise",
+ "parking_lot",
  "pollster",
  "quinn",
  "rand 0.8.5",

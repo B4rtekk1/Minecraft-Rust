@@ -96,11 +96,8 @@ impl World {
         let player_cx = (player_x / CHUNK_SIZE as f32).floor() as i32;
         let player_cz = (player_z / CHUNK_SIZE as f32).floor() as i32;
 
-        for cx in (player_cx - GENERATION_DISTANCE)..=(player_cx + GENERATION_DISTANCE) {
-            for cz in (player_cz - GENERATION_DISTANCE)..=(player_cz + GENERATION_DISTANCE) {
-                self.ensure_chunk_generated(cx, cz);
-            }
-        }
+        // Synchronous generation removed - now handled asynchronously by ChunkLoader in main.rs
+        // This prevents "dead frames" and GPU usage drops during exploration.
 
         let chunks_to_remove: Vec<(i32, i32)> = self
             .chunks
@@ -1014,6 +1011,45 @@ impl World {
 
     pub fn is_solid(&self, x: i32, y: i32, z: i32) -> bool {
         self.get_block(x, y, z).is_solid()
+    }
+
+    pub fn is_subchunk_occluded(&self, cx: i32, cz: i32, sy: i32) -> bool {
+        // A subchunk is occluded if it's fully opaque and all 6 adjacent subchunks are also fully opaque.
+        // This is a conservative but very fast check.
+        if let Some(chunk) = self.chunks.get(&(cx, cz)) {
+            if !chunk.subchunks[sy as usize].is_fully_opaque {
+                return false;
+            }
+
+            // Check +Y and -Y (within same chunk)
+            if sy > 0 && !chunk.subchunks[(sy - 1) as usize].is_fully_opaque {
+                return false;
+            }
+            if sy < NUM_SUBCHUNKS as i32 - 1 && !chunk.subchunks[(sy + 1) as usize].is_fully_opaque
+            {
+                return false;
+            }
+            // Borders of world height are not occluded
+            if sy == 0 || sy == NUM_SUBCHUNKS as i32 - 1 {
+                return false;
+            }
+
+            // Check X and Z neighbors
+            let neighbors = [(cx - 1, cz), (cx + 1, cz), (cx, cz - 1), (cx, cz + 1)];
+            for (ncx, ncz) in neighbors {
+                if let Some(nchunk) = self.chunks.get(&(ncx, ncz)) {
+                    if !nchunk.subchunks[sy as usize].is_fully_opaque {
+                        return false;
+                    }
+                } else {
+                    // If neighbor chunk is not loaded, we can't be sure it's occluded
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        false
     }
 
     pub fn find_spawn_point(&self) -> (f32, f32, f32) {
