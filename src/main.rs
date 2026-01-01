@@ -66,6 +66,7 @@ struct State {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
+    reflection_render_pipeline: wgpu::RenderPipeline,
     water_pipeline: wgpu::RenderPipeline,
     sun_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
@@ -78,6 +79,8 @@ struct State {
     num_crosshair_indices: u32,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
+    reflection_uniform_buffer: wgpu::Buffer,
+    reflection_uniform_bind_group: wgpu::BindGroup,
     shadow_bind_group: wgpu::BindGroup,
     depth_texture: wgpu::TextureView,
     shadow_texture_view: wgpu::TextureView,
@@ -110,6 +113,8 @@ struct State {
     texture_sampler: wgpu::Sampler,
     game_state: GameState,
     menu_state: MenuState,
+    /// Reflection mode: 0=off, 1=SSR (default)
+    reflection_mode: u32,
     // Multiplayer
     network_client: Option<TcpClient>,
     remote_players: HashMap<u32, RemotePlayer>,
@@ -150,7 +155,7 @@ impl State {
         let window = Arc::new(window);
         let size = window.inner_size();
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
@@ -167,15 +172,14 @@ impl State {
             .unwrap();
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
-                    memory_hints: Default::default(),
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: Default::default(),
+                experimental_features: Default::default(),
+                trace: wgpu::Trace::Off,
+            })
             .await
             .unwrap();
 
@@ -237,10 +241,29 @@ impl State {
                 sun_position: [0.4, -0.2, 0.3],
                 is_underwater: 0.0,
                 screen_size: [1920.0, 1080.0],
-                _padding: [0.0, 0.0],
+                water_level: 63.0,
+                reflection_mode: 1.0,
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+
+        let reflection_uniform_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Reflection Uniform Buffer"),
+                contents: bytemuck::cast_slice(&[Uniforms {
+                    view_proj: Matrix4::from_scale(1.0).into(),
+                    inv_view_proj: Matrix4::from_scale(1.0).into(),
+                    sun_view_proj: Matrix4::from_scale(1.0).into(),
+                    camera_pos: [0.0, 0.0, 0.0],
+                    time: 0.0,
+                    sun_position: [0.4, -0.2, 0.3],
+                    is_underwater: 0.0,
+                    screen_size: [1920.0, 1080.0],
+                    water_level: 63.0,
+                    reflection_mode: 1.0,
+                }]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
 
         let (atlas_data, atlas_width, atlas_height) =
             match load_texture_atlas_from_file("assets/textures.png") {
@@ -307,14 +330,14 @@ impl State {
         });
 
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &texture_atlas,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             &atlas_data,
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4 * atlas_width),
                 rows_per_image: Some(atlas_height),
@@ -350,14 +373,14 @@ impl State {
             }
 
             queue.write_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &texture_atlas,
                     mip_level: level,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
                 &level_data,
-                wgpu::ImageDataLayout {
+                wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(4 * m_width),
                     rows_per_image: Some(m_height),
@@ -383,7 +406,7 @@ impl State {
             address_mode_w: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             anisotropy_clamp: 16,
             ..Default::default()
         });
@@ -414,7 +437,7 @@ impl State {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
@@ -523,7 +546,7 @@ impl State {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
 
@@ -672,6 +695,33 @@ impl State {
             label: Some("uniform_bind_group"),
         });
 
+        let reflection_uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &uniform_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: reflection_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&texture_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&shadow_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+            ],
+            label: Some("reflection_uniform_bind_group"),
+        });
+
         let shadow_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &shadow_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
@@ -684,21 +734,21 @@ impl State {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
             bind_group_layouts: &[&uniform_bind_group_layout],
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
 
         let shadow_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Shadow Pipeline Layout"),
                 bind_group_layouts: &[&shadow_bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         let water_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Water Pipeline Layout"),
                 bind_group_layouts: &[&water_bind_group_layout],
-                push_constant_ranges: &[], // Jeśli nie używasz push constants – pusty slice
+                immediate_size: 0,
             });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -735,8 +785,47 @@ impl State {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
         });
+
+        // Reflection pipeline: same as render_pipeline but with reversed culling to handle mirrored winding
+        let reflection_render_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Reflection Render Pipeline"),
+                layout: Some(&pipeline_layout),
+                cache: None,
+                vertex: wgpu::VertexState {
+                    module: &terrain_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Vertex::desc()],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &terrain_shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: surface_format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: Some(wgpu::Face::Front), // Correct: Mirrored winding order
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+            });
 
         let water_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Water Pipeline"),
@@ -772,7 +861,7 @@ impl State {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
         });
 
         let crosshair_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -803,7 +892,7 @@ impl State {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
         });
 
         let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -831,7 +920,7 @@ impl State {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
         });
 
         let sun_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -868,7 +957,7 @@ impl State {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
         });
 
         // Sky pipeline - renders a fullscreen quad with procedural sky
@@ -906,7 +995,7 @@ impl State {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
         });
 
         let sun_vertices = vec![
@@ -1011,6 +1100,7 @@ impl State {
             queue,
             config,
             render_pipeline,
+            reflection_render_pipeline,
             water_pipeline,
             sun_pipeline,
             sky_pipeline,
@@ -1023,6 +1113,8 @@ impl State {
             num_crosshair_indices,
             uniform_buffer,
             uniform_bind_group,
+            reflection_uniform_buffer,
+            reflection_uniform_bind_group,
             shadow_bind_group,
             depth_texture,
             shadow_texture_view,
@@ -1051,6 +1143,7 @@ impl State {
             texture_sampler,
             game_state: GameState::Menu,
             menu_state: MenuState::default(),
+            reflection_mode: 1, // Default: SSR only
             // Multiplayer
             network_client: None,
             remote_players: HashMap::new(),
@@ -1128,6 +1221,86 @@ impl State {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
             self.depth_texture = Self::create_depth_texture(&self.device, &self.config);
+
+            // Recreate SSR textures at new size
+            self.ssr_color_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("SSR Color Texture"),
+                size: wgpu::Extent3d {
+                    width: self.config.width,
+                    height: self.config.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.surface_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            self.ssr_color_view = self
+                .ssr_color_texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+
+            self.ssr_depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("SSR Depth Texture"),
+                size: wgpu::Extent3d {
+                    width: self.config.width,
+                    height: self.config.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            self.ssr_depth_view = self
+                .ssr_depth_texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+
+            // Recreate water bind group with new texture views
+            self.water_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.water_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.texture_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&self.shadow_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&self.shadow_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(&self.ssr_color_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(&self.ssr_depth_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::Sampler(&self.ssr_sampler),
+                    },
+                ],
+                label: Some("water_bind_group"),
+            });
+
             self.viewport.update(
                 &self.queue,
                 Resolution {
@@ -1216,13 +1389,7 @@ impl State {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Render Encoder"),
-            });
-
-        // Build remote player meshes before starting render pass
+        // 1. Build remote player meshes before starting render pass
         if !self.remote_players.is_empty() && self.game_state != GameState::Menu {
             let mut all_vertices = Vec::new();
             let mut all_indices = Vec::new();
@@ -1271,7 +1438,7 @@ impl State {
 
         let time = self.game_start_time.elapsed().as_secs_f32();
 
-        let day_cycle_speed = 0.05;
+        let day_cycle_speed = 0.005;
         // Start at noon (sun at top) by adding PI/2 offset
         let sun_angle = time * day_cycle_speed + std::f32::consts::FRAC_PI_2;
 
@@ -1350,7 +1517,8 @@ impl State {
                 sun_position: [sun_x, sun_y, sun_z],
                 is_underwater,
                 screen_size: [self.config.width as f32, self.config.height as f32],
-                _padding: [0.0, 0.0],
+                water_level: 63.0,
+                reflection_mode: self.reflection_mode as f32,
             }]),
         );
 
@@ -1612,6 +1780,7 @@ impl State {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.ssr_color_view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: sky_r as f64,
@@ -1648,6 +1817,7 @@ impl State {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.ssr_color_view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -1680,6 +1850,7 @@ impl State {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: sky_r as f64,
@@ -1759,6 +1930,7 @@ impl State {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -1894,6 +2066,7 @@ impl State {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,          // tekstura swapchain (lub offscreen)
                     resolve_target: None, // nie używamy multisamplingu
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load, // ważne: nie czyść, zachowaj istniejący obraz
                         store: wgpu::StoreOp::Store,
@@ -1929,8 +2102,9 @@ impl State {
             self.fps_buffer.set_text(
                 &mut self.font_system,
                 &fps_text,
-                Attrs::new().family(Family::SansSerif),
+                &Attrs::new().family(Family::SansSerif),
                 Shaping::Advanced,
+                None,
             );
             self.fps_buffer.set_size(
                 &mut self.font_system,
@@ -1962,10 +2136,11 @@ impl State {
                     buffer.set_text(
                         &mut self.font_system,
                         &label.username,
-                        Attrs::new()
+                        &Attrs::new()
                             .family(Family::SansSerif)
                             .color(Color::rgb(76, 255, 76)),
                         Shaping::Advanced,
+                        None,
                     );
                     buffer.set_size(
                         &mut self.font_system,
@@ -2045,6 +2220,7 @@ impl State {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -2107,8 +2283,9 @@ impl State {
         self.menu_buffer.set_text(
             &mut self.font_system,
             &text,
-            Attrs::new().family(Family::SansSerif),
+            &Attrs::new().family(Family::SansSerif),
             Shaping::Advanced,
+            None,
         );
         self.menu_buffer.set_size(
             &mut self.font_system,
@@ -2508,6 +2685,16 @@ fn main() {
                                         winit::window::Fullscreen::Borderless(None),
                                     ));
                                 }
+                            }
+                            KeyCode::KeyR if pressed => {
+                                // Toggle reflection mode: 0=Off, 1=SSR
+                                state.reflection_mode = (state.reflection_mode + 1) % 2;
+                                let mode_name = match state.reflection_mode {
+                                    0 => "Off",
+                                    1 => "SSR",
+                                    _ => "Unknown",
+                                };
+                                println!("Reflection mode: {}", mode_name);
                             }
                             KeyCode::F5 if pressed => {
                                 let saved = SavedWorld::from_world(

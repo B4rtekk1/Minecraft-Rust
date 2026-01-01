@@ -13,5 +13,8 @@ pub struct Uniforms {
     pub is_underwater: f32,
     /// Screen dimensions for SSR calculations
     pub screen_size: [f32; 2],
-    pub _padding: [f32; 2],
+    /// Water level for reflections
+    pub water_level: f32,
+    /// Reflection mode: 0=off, 1=SSR only
+    pub reflection_mode: f32,
 }

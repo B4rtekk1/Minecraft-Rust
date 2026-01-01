@@ -4,6 +4,7 @@
 /// It includes support for:
 /// - Procedural vertex wave displacement (sinusoidal)
 /// - Fresnel-based sky reflections
+/// - Screen Space Reflections (SSR)
 /// - Specular highlights for sun and moon
 /// - Procedural shimmer/glitter effects
 /// - Depth-based fog and alpha blending
@@ -17,7 +18,8 @@ struct Uniforms {
     sun_position: vec3<f32>,
     is_underwater: f32,
     screen_size: vec2<f32>,
-    _padding: vec2<f32>,
+    water_level: f32,
+    reflection_mode: f32, // 0=off, 1=SSR
 };
 
 
@@ -69,10 +71,11 @@ fn vs_water(model: VertexInput) -> VertexOutput {
     var pos = model.position;
     if model.normal.y > 0.5 {
         // Multi-layered sine wave displacement
-        let wave1 = sin(pos.x * 0.5 + uniforms.time * 2.0) * 0.05;
-        let wave2 = sin(pos.z * 0.7 + uniforms.time * 1.5) * 0.04;
-        let wave3 = sin((pos.x + pos.z) * 0.3 + uniforms.time * 3.0) * 0.03;
-        pos.y += wave1 + wave2 + wave3;
+        let wave1 = sin(pos.x * 0.4 + uniforms.time * 2.1) * 0.05;
+        let wave2 = sin(pos.z * 0.5 + uniforms.time * 1.8) * 0.04;
+        let wave3 = sin((pos.x + pos.z) * 0.25 + uniforms.time * 2.8) * 0.035;
+        let wave4 = sin((pos.x * 0.3 - pos.z * 0.4) + uniforms.time * 2.3) * 0.025;
+        pos.y += wave1 + wave2 + wave3 + wave4;
         
         // Slightly lower water level to prevent z-fighting with adjacent solid blocks
         pos.y -= 0.15;
@@ -418,16 +421,23 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     // This ensures that when SSR fails, we fall back to the sky color being reflected, not the sky below us
     let sky_color = calculate_sky_color(reflect_dir_ssr, sun_dir);
     
-    // Trace SSR
-    let ssr_result = ssr_trace(in.world_pos, reflect_dir_ssr, in.clip_position);
-    
-    // Blend SSR with sky color based on SSR confidence
-    // Add distance-based fade for smoother SSR falloff
-    let ssr_distance_fade = clamp(1.0 - dist_to_camera / 150.0, 0.0, 1.0);
+    // Reflection mode: 0=off (sky only), 1=SSR
+    let reflection_mode = i32(uniforms.reflection_mode);
     var reflection_color = sky_color;
-    if ssr_result.w > 0.0 {
-        let ssr_blend = ssr_result.w * 0.85 * ssr_distance_fade;
-        reflection_color = mix(sky_color, ssr_result.rgb, ssr_blend);
+    
+    let ssr_distance_fade = clamp(1.0 - dist_to_camera / 150.0, 0.0, 1.0);
+    
+    // Mode 0: Off - use sky only
+    if reflection_mode == 0 {
+        reflection_color = sky_color;
+    }
+    // Mode 1: SSR
+    else {
+        let ssr_result = ssr_trace(in.world_pos, reflect_dir_ssr, in.clip_position);
+        if ssr_result.w > 0.0 {
+            let ssr_blend = ssr_result.w * 0.85 * ssr_distance_fade;
+            reflection_color = mix(sky_color, ssr_result.rgb, ssr_blend);
+        }
     }
     
     var shadow = 1.0;
@@ -446,10 +456,10 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     // Solar specular highlights (sun glisten)
     // Use less perturbed normal for specular so it follows sun, not player
     if sun_dir.y > 0.0 {
-        let spec_normal = normalize(mix(in.normal, water_normal, 0.3)); // Less perturbation
+        let spec_normal = normalize(mix(in.normal, water_normal, 0.2)); // Very subtle perturbation for solar spec
         let reflect_dir = reflect(-sun_dir, spec_normal);
-        let spec = pow(max(dot(view_dir, reflect_dir), 0.0), 256.0); // Sharper highlight
-        water_color += vec3<f32>(1.0, 0.95, 0.8) * spec * 1.5 * shadow * day_factor;
+        let spec = pow(max(dot(view_dir, reflect_dir), 0.0), 64.0); // Softer highlight to avoid stripe artifacts
+        water_color += vec3<f32>(1.0, 0.95, 0.8) * spec * 1.0 * shadow * day_factor;
     }
     
     // Lunar specular highlights - slightly more perturbation for softer moonlight

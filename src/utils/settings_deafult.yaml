@@ -1,0 +1,36 @@
+player:
+  nickname: "Player"
+  id: 0
+
+graphics:
+  fov: 70
+  render_distance: 16
+  simulation_distance: 8
+  vsync: false
+  fullscreen: true
+  max_fps: 999
+
+audio:
+  master_volume: 1.0
+  music_volume: 1.0
+  sfx_volume: 1.0
+  muted: false
+
+controls:
+  mouse_sensitivity: 0.5
+  invert_mouse: false
+
+  keybinds:
+    forward: keyboard.W
+    back: keyboard.S
+    left: keyboard.A
+    right: keyboard.D
+    jump: keyboard.Space
+    sprint: keyboard.LeftShift
+    sneak: keyboard.LeftControl
+    inventory: keyboard.E
+    chat: keyboard.T
+    screenshot: keyboard.F1
+    save_world: keyboard.F5
+    load_world: keyboard.F9
+    reflection_mode: keyboard.R
