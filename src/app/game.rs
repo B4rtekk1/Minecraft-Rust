@@ -1323,6 +1323,13 @@ impl State {
         if let Some(chunk) = world.chunks.get_mut(&(result.cx, result.cz)) {
             let subchunk = &mut chunk.subchunks[result.sy as usize];
 
+            // Optimization: If the mesh content hasn't changed (based on hash), don't update GPU buffers
+            if subchunk.mesh_hash != 0 && subchunk.mesh_hash == result.mesh_hash {
+                subchunk.mesh_dirty = false;
+                return;
+            }
+            subchunk.mesh_hash = result.mesh_hash;
+
             subchunk.num_indices = result.terrain.1.len() as u32;
 
             // Handle Terrain Allocation
@@ -1431,9 +1438,11 @@ impl State {
                     if self.digging.target == Some(target) {
                         self.digging.progress += dt;
                         if self.digging.progress >= break_time {
-                            world.set_block_player(bx, by, bz, BlockType::Air);
+                            let changed = world.set_block_player(bx, by, bz, BlockType::Air);
                             drop(world); // Release borrow before calling mark_chunk_dirty
-                            self.mark_chunk_dirty(bx, by, bz);
+                            if changed {
+                                self.mark_chunk_dirty(bx, by, bz);
+                            }
                             self.digging.target = None;
                             self.digging.progress = 0.0;
                         }
@@ -2421,10 +2430,13 @@ impl State {
         if button == MouseButton::Right && pressed {
             let target = self.camera.raycast(&*self.world.read(), 5.0);
             if let Some((_, _, _, px, py, pz)) = target {
-                self.world
+                let changed = self
+                    .world
                     .write()
                     .set_block_player(px, py, pz, BlockType::Stone);
-                self.mark_chunk_dirty(px, py, pz);
+                if changed {
+                    self.mark_chunk_dirty(px, py, pz);
+                }
             }
         }
     }

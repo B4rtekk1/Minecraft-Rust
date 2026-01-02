@@ -16,6 +16,7 @@ pub struct SubChunk {
     pub num_water_indices: u32,
     pub aabb: AABB,
     pub is_fully_opaque: bool,
+    pub mesh_hash: u64,
 }
 
 impl SubChunk {
@@ -42,6 +43,7 @@ impl SubChunk {
                     (world_z + CHUNK_SIZE) as f32,
                 ),
             ),
+            mesh_hash: 0,
         }
     }
 
@@ -53,12 +55,16 @@ impl SubChunk {
         }
     }
 
-    pub fn set_block(&mut self, x: i32, y: i32, z: i32, block: BlockType) {
+    pub fn set_block(&mut self, x: i32, y: i32, z: i32, block: BlockType) -> bool {
         if x >= 0 && x < CHUNK_SIZE && y >= 0 && y < SUBCHUNK_HEIGHT && z >= 0 && z < CHUNK_SIZE {
-            self.blocks[x as usize][y as usize][z as usize] = block;
-            self.mesh_dirty = true;
-            self.is_empty = block == BlockType::Air && self.is_empty;
+            if self.blocks[x as usize][y as usize][z as usize] != block {
+                self.blocks[x as usize][y as usize][z as usize] = block;
+                self.mesh_dirty = true;
+                self.is_empty = block == BlockType::Air && self.is_empty;
+                return true;
+            }
         }
+        false
     }
 
     pub fn check_empty(&mut self) {
@@ -116,12 +122,12 @@ impl Chunk {
         self.subchunks[subchunk_idx].get_block(x, local_y, z)
     }
 
-    pub fn set_block(&mut self, x: i32, y: i32, z: i32, block: BlockType) {
+    pub fn set_block(&mut self, x: i32, y: i32, z: i32, block: BlockType) -> bool {
         if y < 0 || y >= WORLD_HEIGHT {
-            return;
+            return false;
         }
         let subchunk_idx = (y / SUBCHUNK_HEIGHT) as usize;
         let local_y = y % SUBCHUNK_HEIGHT;
-        self.subchunks[subchunk_idx].set_block(x, local_y, z, block);
+        self.subchunks[subchunk_idx].set_block(x, local_y, z, block)
     }
 }

@@ -964,9 +964,9 @@ impl World {
         }
     }
 
-    pub fn set_block(&mut self, x: i32, y: i32, z: i32, block: BlockType) {
+    pub fn set_block(&mut self, x: i32, y: i32, z: i32, block: BlockType) -> bool {
         if y < 0 || y >= WORLD_HEIGHT {
-            return;
+            return false;
         }
         let cx = if x >= 0 {
             x / CHUNK_SIZE
@@ -982,13 +982,15 @@ impl World {
         let lz = z.rem_euclid(CHUNK_SIZE);
 
         if let Some(chunk) = self.chunks.get_mut(&(cx, cz)) {
-            chunk.set_block(lx, y, lz, block);
+            chunk.set_block(lx, y, lz, block)
+        } else {
+            false
         }
     }
 
-    pub fn set_block_player(&mut self, x: i32, y: i32, z: i32, block: BlockType) {
+    pub fn set_block_player(&mut self, x: i32, y: i32, z: i32, block: BlockType) -> bool {
         if y < 0 || y >= WORLD_HEIGHT {
-            return;
+            return false;
         }
         let cx = if x >= 0 {
             x / CHUNK_SIZE
@@ -1004,8 +1006,13 @@ impl World {
         let lz = z.rem_euclid(CHUNK_SIZE);
 
         if let Some(chunk) = self.chunks.get_mut(&(cx, cz)) {
-            chunk.set_block(lx, y, lz, block);
-            chunk.player_modified = true;
+            let changed = chunk.set_block(lx, y, lz, block);
+            if changed {
+                chunk.player_modified = true;
+            }
+            changed
+        } else {
+            false
         }
     }
 

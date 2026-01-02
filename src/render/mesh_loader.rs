@@ -4,6 +4,9 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use std::sync::Arc;
 use std::thread;
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 pub struct MeshRequest {
     pub cx: i32,
     pub cz: i32,
@@ -16,6 +19,7 @@ pub struct MeshResult {
     pub sy: i32,
     pub terrain: (Vec<Vertex>, Vec<u32>),
     pub water: (Vec<Vertex>, Vec<u32>),
+    pub mesh_hash: u64,
 }
 
 pub struct MeshLoader {
@@ -42,6 +46,17 @@ impl MeshLoader {
                             world_read.build_subchunk_mesh(req.cx, req.cz, req.sy)
                         };
 
+                        let mut hasher = DefaultHasher::new();
+                        for v in &meshes.0.0 {
+                            bytemuck::bytes_of(v).hash(&mut hasher);
+                        }
+                        meshes.0.1.hash(&mut hasher);
+                        for v in &meshes.1.0 {
+                            bytemuck::bytes_of(v).hash(&mut hasher);
+                        }
+                        meshes.1.1.hash(&mut hasher);
+                        let mesh_hash = hasher.finish();
+
                         if tx
                             .send(MeshResult {
                                 cx: req.cx,
@@ -49,6 +64,7 @@ impl MeshLoader {
                                 sy: req.sy,
                                 terrain: meshes.0,
                                 water: meshes.1,
+                                mesh_hash,
                             })
                             .is_err()
                         {
