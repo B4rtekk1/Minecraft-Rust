@@ -13,3 +13,6 @@ pub use block::BlockType;
 pub use chunk::{Chunk, SubChunk};
 pub use uniforms::Uniforms;
 pub use vertex::Vertex;
+
+pub mod types;
+pub use types::{BufferAllocation, DrawIndexedIndirect};

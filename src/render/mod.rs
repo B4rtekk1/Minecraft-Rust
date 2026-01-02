@@ -1,6 +1,7 @@
 //! Rendering-related modules
 //! Contains mesh building, frustum culling, texture generation, and mesh loading.
 
+pub mod buffer_manager;
 pub mod frustum;
 pub mod mesh;
 pub mod mesh_loader;

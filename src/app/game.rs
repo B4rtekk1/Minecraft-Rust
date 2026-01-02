@@ -42,6 +42,7 @@ struct Args {
 }
 
 use render3d::chunk_loader::ChunkLoader;
+use render3d::core::DrawIndexedIndirect;
 use render3d::{
     ASYNC_WORKER_COUNT, BlockType, CHUNK_SIZE, Camera, DEFAULT_WORLD_FILE, DiggingState,
     GENERATION_DISTANCE, InputState, MAX_CHUNKS_PER_FRAME, MAX_MESH_BUILDS_PER_FRAME,
@@ -147,6 +148,7 @@ struct State {
     menu_buffer: glyphon::Buffer,
     player_label_buffers: Vec<glyphon::Buffer>,
     mesh_loader: render3d::MeshLoader,
+    chunk_buffer_manager: render3d::render::buffer_manager::ChunkBufferManager,
 }
 
 impl State {
@@ -174,7 +176,7 @@ impl State {
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
+                required_limits: adapter.limits(),
                 memory_hints: Default::default(),
                 experimental_features: Default::default(),
                 trace: wgpu::Trace::Off,
@@ -1094,6 +1096,9 @@ impl State {
         let fps_buffer = glyphon::Buffer::new(&mut font_system, Metrics::new(40.0, 48.0));
         let menu_buffer = glyphon::Buffer::new(&mut font_system, Metrics::new(24.0, 32.0));
 
+        let chunk_buffer_manager =
+            render3d::render::buffer_manager::ChunkBufferManager::new(&device);
+
         Self {
             surface,
             device,
@@ -1121,6 +1126,7 @@ impl State {
             shadow_sampler,
             world,
             mesh_loader,
+            chunk_buffer_manager,
             camera,
             input: InputState::default(),
             digging: DiggingState::default(),
@@ -1318,90 +1324,40 @@ impl State {
             let subchunk = &mut chunk.subchunks[result.sy as usize];
 
             subchunk.num_indices = result.terrain.1.len() as u32;
+
+            // Handle Terrain Allocation
+            if let Some(alloc) = subchunk.buffer_allocation {
+                self.chunk_buffer_manager.deallocate(alloc);
+                subchunk.buffer_allocation = None;
+            }
+
             if !result.terrain.0.is_empty() {
-                let vertex_data: &[u8] = bytemuck::cast_slice(&result.terrain.0);
-                let index_data: &[u8] = bytemuck::cast_slice(&result.terrain.1);
-
-                let needs_new_vertex_buffer = subchunk
-                    .vertex_buffer
-                    .as_ref()
-                    .map(|b| b.size() < vertex_data.len() as u64)
-                    .unwrap_or(true);
-                let needs_new_index_buffer = subchunk
-                    .index_buffer
-                    .as_ref()
-                    .map(|b| b.size() < index_data.len() as u64)
-                    .unwrap_or(true);
-
-                if needs_new_vertex_buffer {
-                    subchunk.vertex_buffer =
-                        Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("Subchunk Vertex Buffer"),
-                            size: vertex_data.len() as u64,
-                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                            mapped_at_creation: false,
-                        }));
+                subchunk.buffer_allocation = self.chunk_buffer_manager.allocate(
+                    &self.queue,
+                    &result.terrain.0,
+                    &result.terrain.1,
+                );
+                if subchunk.buffer_allocation.is_none() {
+                    eprintln!(
+                        "Failed to allocate terrain buffer for chunk {},{}",
+                        result.cx, result.cz
+                    );
                 }
-                if needs_new_index_buffer {
-                    subchunk.index_buffer =
-                        Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("Subchunk Index Buffer"),
-                            size: index_data.len() as u64,
-                            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-                            mapped_at_creation: false,
-                        }));
-                }
-
-                self.queue
-                    .write_buffer(subchunk.vertex_buffer.as_ref().unwrap(), 0, vertex_data);
-                self.queue
-                    .write_buffer(subchunk.index_buffer.as_ref().unwrap(), 0, index_data);
             }
 
             subchunk.num_water_indices = result.water.1.len() as u32;
+
+            // Handle Water Allocation
+            if let Some(alloc) = subchunk.water_buffer_allocation {
+                self.chunk_buffer_manager.deallocate(alloc);
+                subchunk.water_buffer_allocation = None;
+            }
+
             if !result.water.0.is_empty() {
-                let vertex_data: &[u8] = bytemuck::cast_slice(&result.water.0);
-                let index_data: &[u8] = bytemuck::cast_slice(&result.water.1);
-
-                let needs_new_vertex_buffer = subchunk
-                    .water_vertex_buffer
-                    .as_ref()
-                    .map(|b| b.size() < vertex_data.len() as u64)
-                    .unwrap_or(true);
-                let needs_new_index_buffer = subchunk
-                    .water_index_buffer
-                    .as_ref()
-                    .map(|b| b.size() < index_data.len() as u64)
-                    .unwrap_or(true);
-
-                if needs_new_vertex_buffer {
-                    subchunk.water_vertex_buffer =
-                        Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("Subchunk Water Vertex Buffer"),
-                            size: vertex_data.len() as u64,
-                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                            mapped_at_creation: false,
-                        }));
-                }
-                if needs_new_index_buffer {
-                    subchunk.water_index_buffer =
-                        Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("Subchunk Water Index Buffer"),
-                            size: index_data.len() as u64,
-                            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-                            mapped_at_creation: false,
-                        }));
-                }
-
-                self.queue.write_buffer(
-                    subchunk.water_vertex_buffer.as_ref().unwrap(),
-                    0,
-                    vertex_data,
-                );
-                self.queue.write_buffer(
-                    subchunk.water_index_buffer.as_ref().unwrap(),
-                    0,
-                    index_data,
+                subchunk.water_buffer_allocation = self.chunk_buffer_manager.allocate(
+                    &self.queue,
+                    &result.water.0,
+                    &result.water.1,
                 );
             }
 
@@ -1645,6 +1601,118 @@ impl State {
         let player_cx = (self.camera.position.x / CHUNK_SIZE as f32).floor() as i32;
         let player_cz = (self.camera.position.z / CHUNK_SIZE as f32).floor() as i32;
 
+        let mut chunks_rendered = 0u32;
+        let mut subchunks_rendered = 0u32;
+
+        let day_factor = sun_dir.y.max(0.0).min(1.0);
+        let night_factor = (-sun_dir.y).max(0.0).min(1.0);
+        let sunset_factor = 1.0 - sun_dir.y.abs();
+
+        let day_sky = (0.53, 0.81, 0.98);
+        let sunset_sky = (1.0, 0.5, 0.2);
+        let night_sky = (0.001, 0.001, 0.005);
+
+        let sky_r: f32 = (day_sky.0 * day_factor
+            + sunset_sky.0 * sunset_factor * 0.5
+            + night_sky.0 * night_factor)
+            .min(1.0);
+        let sky_g: f32 = (day_sky.1 * day_factor
+            + sunset_sky.1 * sunset_factor * 0.5
+            + night_sky.1 * night_factor)
+            .min(1.0);
+        let sky_b: f32 = (day_sky.2 * day_factor
+            + sunset_sky.2 * sunset_factor * 0.5
+            + night_sky.2 * night_factor)
+            .min(1.0);
+
+        // Collect visible subchunks for Indirect Drawing
+        let mut terrain_draws: Vec<DrawIndexedIndirect> = Vec::with_capacity(2048);
+        let mut water_draws: Vec<DrawIndexedIndirect> = Vec::with_capacity(512);
+        let mut shadow_draws: Vec<DrawIndexedIndirect> = Vec::with_capacity(2048);
+
+        {
+            let world = self.world.read();
+            for cx in (player_cx - RENDER_DISTANCE)..=(player_cx + RENDER_DISTANCE) {
+                for cz in (player_cz - RENDER_DISTANCE)..=(player_cz + RENDER_DISTANCE) {
+                    if let Some(chunk) = world.chunks.get(&(cx, cz)) {
+                        for (subchunk_idx, subchunk) in chunk.subchunks.iter().enumerate() {
+                            if subchunk.is_empty {
+                                continue;
+                            }
+                            // Occlusion culling
+                            if world.is_subchunk_occluded(cx, cz, subchunk_idx as i32) {
+                                continue;
+                            }
+
+                            // Frustum Culling for Camera
+                            if subchunk.aabb.is_visible(&frustum_planes) {
+                                if let Some(alloc) = &subchunk.buffer_allocation {
+                                    terrain_draws.push(DrawIndexedIndirect {
+                                        index_count: alloc.index_count,
+                                        instance_count: 1,
+                                        first_index: alloc.index_offset,
+                                        base_vertex: alloc.base_vertex,
+                                        first_instance: 0,
+                                    });
+                                    subchunks_rendered += 1;
+                                    chunks_rendered += 1; // Approx
+                                }
+                                if let Some(alloc) = &subchunk.water_buffer_allocation {
+                                    water_draws.push(DrawIndexedIndirect {
+                                        index_count: alloc.index_count,
+                                        instance_count: 1,
+                                        first_index: alloc.index_offset,
+                                        base_vertex: alloc.base_vertex,
+                                        first_instance: 0,
+                                    });
+                                }
+                            }
+
+                            // Frustum Culling for Shadow
+                            if subchunk.aabb.is_visible(&shadow_frustum) {
+                                if let Some(alloc) = &subchunk.buffer_allocation {
+                                    shadow_draws.push(DrawIndexedIndirect {
+                                        index_count: alloc.index_count,
+                                        instance_count: 1,
+                                        first_index: alloc.index_offset,
+                                        base_vertex: alloc.base_vertex,
+                                        first_instance: 0,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Upload Indirect Buffers
+        // Shadow Buffer (Transient)
+        let shadow_indirect_buffer =
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Shadow Indirect Buffer"),
+                    contents: bytemuck::cast_slice(&shadow_draws),
+                    usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+                });
+
+        // Main Indirect Buffer (Terrain + Water)
+        let terrain_draw_count = terrain_draws.len();
+        let water_draw_count = water_draws.len();
+        let draw_cmd_size = std::mem::size_of::<DrawIndexedIndirect>() as u64;
+
+        self.queue.write_buffer(
+            &self.chunk_buffer_manager.indirect_buffer,
+            0,
+            bytemuck::cast_slice(&terrain_draws),
+        );
+        self.queue.write_buffer(
+            &self.chunk_buffer_manager.indirect_buffer,
+            terrain_draw_count as u64 * draw_cmd_size,
+            bytemuck::cast_slice(&water_draws),
+        );
+
+        // Shadow Pass
         {
             let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Shadow Pass"),
@@ -1660,37 +1728,18 @@ impl State {
                 ..Default::default()
             });
 
-            shadow_pass.set_pipeline(&self.shadow_pipeline);
-            shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
+            if !shadow_draws.is_empty() {
+                shadow_pass.set_pipeline(&self.shadow_pipeline);
+                shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
+                shadow_pass.set_vertex_buffer(0, self.chunk_buffer_manager.vertex_buffer.slice(..));
+                shadow_pass.set_index_buffer(
+                    self.chunk_buffer_manager.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
 
-            let shadow_dist = RENDER_DISTANCE;
-            let world = self.world.read();
-            for cx in (player_cx - shadow_dist)..=(player_cx + shadow_dist) {
-                for cz in (player_cz - shadow_dist)..=(player_cz + shadow_dist) {
-                    if let Some(chunk) = world.chunks.get(&(cx, cz)) {
-                        for (subchunk_idx, subchunk) in chunk.subchunks.iter().enumerate() {
-                            if subchunk.is_empty || subchunk.num_indices == 0 {
-                                continue;
-                            }
-                            // Shadow frustum culling - skip subchunks outside shadow view
-                            if !subchunk.aabb.is_visible(&shadow_frustum) {
-                                continue;
-                            }
-                            // Occlusion culling
-                            if world.is_subchunk_occluded(cx, cz, subchunk_idx as i32) {
-                                continue;
-                            }
-
-                            if let (Some(vb), Some(ib)) =
-                                (&subchunk.vertex_buffer, &subchunk.index_buffer)
-                            {
-                                shadow_pass.set_vertex_buffer(0, vb.slice(..));
-                                shadow_pass
-                                    .set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                                shadow_pass.draw_indexed(0..subchunk.num_indices, 0, 0..1);
-                            }
-                        }
-                    }
+                for i in 0..shadow_draws.len() {
+                    shadow_pass
+                        .draw_indexed_indirect(&shadow_indirect_buffer, (i as u64) * draw_cmd_size);
                 }
             }
         }
@@ -1725,96 +1774,16 @@ impl State {
         for (cx, cz, sy) in meshes_to_request {
             self.mesh_loader.request_mesh(cx, cz, sy);
             // Mark as dirty = false to avoid multiple requests while pending
-            // This is a bit of a hack, we might want a "pending_mesh" flag
             let mut world = self.world.write();
             if let Some(chunk) = world.chunks.get_mut(&(cx, cz)) {
                 chunk.subchunks[sy as usize].mesh_dirty = false;
-            }
-        }
-        let mut chunks_rendered = 0u32;
-        let mut subchunks_rendered = 0u32;
-
-        let day_factor = sun_dir.y.max(0.0).min(1.0);
-        let night_factor = (-sun_dir.y).max(0.0).min(1.0);
-        let sunset_factor = 1.0 - sun_dir.y.abs();
-
-        let day_sky = (0.53, 0.81, 0.98);
-        let sunset_sky = (1.0, 0.5, 0.2);
-        let night_sky = (0.001, 0.001, 0.005);
-
-        let sky_r: f32 = (day_sky.0 * day_factor
-            + sunset_sky.0 * sunset_factor * 0.5
-            + night_sky.0 * night_factor)
-            .min(1.0);
-        let sky_g: f32 = (day_sky.1 * day_factor
-            + sunset_sky.1 * sunset_factor * 0.5
-            + night_sky.1 * night_factor)
-            .min(1.0);
-        let sky_b: f32 = (day_sky.2 * day_factor
-            + sunset_sky.2 * sunset_factor * 0.5
-            + night_sky.2 * night_factor)
-            .min(1.0);
-
-        // Collect visible subchunks first to avoid borrowing issues
-        let mut visible_terrain: Vec<(wgpu::Buffer, wgpu::Buffer, u32)> = Vec::new();
-        let mut visible_water: Vec<(wgpu::Buffer, wgpu::Buffer, u32)> = Vec::new();
-
-        {
-            let world = self.world.read();
-            for cx in (player_cx - RENDER_DISTANCE)..=(player_cx + RENDER_DISTANCE) {
-                for cz in (player_cz - RENDER_DISTANCE)..=(player_cz + RENDER_DISTANCE) {
-                    if let Some(chunk) = world.chunks.get(&(cx, cz)) {
-                        let mut chunk_visible = false;
-                        for (subchunk_idx, subchunk) in chunk.subchunks.iter().enumerate() {
-                            if subchunk.is_empty {
-                                continue;
-                            }
-                            if !subchunk.aabb.is_visible(&frustum_planes) {
-                                continue;
-                            }
-                            // Occlusion culling
-                            if world.is_subchunk_occluded(cx, cz, subchunk_idx as i32) {
-                                continue;
-                            }
-                            // Collect terrain geometry
-                            if subchunk.num_indices > 0 {
-                                if let (Some(vb), Some(ib)) =
-                                    (&subchunk.vertex_buffer, &subchunk.index_buffer)
-                                {
-                                    visible_terrain.push((
-                                        vb.clone(),
-                                        ib.clone(),
-                                        subchunk.num_indices,
-                                    ));
-                                    subchunks_rendered += 1;
-                                    chunk_visible = true;
-                                }
-                            }
-                            // Collect water geometry
-                            if subchunk.num_water_indices > 0 {
-                                if let (Some(vb), Some(ib)) =
-                                    (&subchunk.water_vertex_buffer, &subchunk.water_index_buffer)
-                                {
-                                    visible_water.push((
-                                        vb.clone(),
-                                        ib.clone(),
-                                        subchunk.num_water_indices,
-                                    ));
-                                }
-                            }
-                        }
-                        if chunk_visible {
-                            chunks_rendered += 1;
-                        }
-                    }
-                }
             }
         }
 
         self.chunks_rendered = chunks_rendered;
         self.subchunks_rendered = subchunks_rendered;
 
-        // SSR Pass 1: Render Sky to SSR textures
+        // SSR Pass 1: Local Sky (Unchanged)
         {
             let mut ssr_sky_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("SSR Sky Pass"),
@@ -1851,7 +1820,7 @@ impl State {
             ssr_sky_pass.draw_indexed(0..6, 0, 0..1);
         }
 
-        // SSR Pass 2: Render Terrain to SSR textures (using collected geometry)
+        // SSR Pass 2: Terrain
         {
             let mut ssr_terrain_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("SSR Terrain Pass"),
@@ -1875,16 +1844,26 @@ impl State {
                 ..Default::default()
             });
 
-            ssr_terrain_pass.set_pipeline(&self.render_pipeline);
-            ssr_terrain_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            for (vb, ib, num_indices) in &visible_terrain {
-                ssr_terrain_pass.set_vertex_buffer(0, vb.slice(..));
-                ssr_terrain_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                ssr_terrain_pass.draw_indexed(0..*num_indices, 0, 0..1);
+            if !terrain_draws.is_empty() {
+                ssr_terrain_pass.set_pipeline(&self.render_pipeline);
+                ssr_terrain_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                ssr_terrain_pass
+                    .set_vertex_buffer(0, self.chunk_buffer_manager.vertex_buffer.slice(..));
+                ssr_terrain_pass.set_index_buffer(
+                    self.chunk_buffer_manager.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+
+                for i in 0..terrain_draw_count {
+                    ssr_terrain_pass.draw_indexed_indirect(
+                        &self.chunk_buffer_manager.indirect_buffer,
+                        (i as u64) * draw_cmd_size,
+                    );
+                }
             }
         }
 
-        // Main Scene Pass: Render Sky, Terrain, Water, and Objects to Swapchain
+        // Main Scene Pass
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Main Scene Pass"),
@@ -1922,21 +1901,42 @@ impl State {
             render_pass.draw_indexed(0..6, 0, 0..1);
 
             // 2. Draw Terrain
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            for (vb, ib, num_indices) in &visible_terrain {
-                render_pass.set_vertex_buffer(0, vb.slice(..));
-                render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..*num_indices, 0, 0..1);
+            if !terrain_draws.is_empty() {
+                render_pass.set_pipeline(&self.render_pipeline);
+                render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.chunk_buffer_manager.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(
+                    self.chunk_buffer_manager.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+
+                for i in 0..terrain_draw_count {
+                    render_pass.draw_indexed_indirect(
+                        &self.chunk_buffer_manager.indirect_buffer,
+                        (i as u64) * draw_cmd_size,
+                    );
+                }
             }
 
             // 3. Draw Water (Reflective)
-            render_pass.set_pipeline(&self.water_pipeline);
-            render_pass.set_bind_group(0, &self.water_bind_group, &[]);
-            for (vb, ib, num_indices) in &visible_water {
-                render_pass.set_vertex_buffer(0, vb.slice(..));
-                render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..*num_indices, 0, 0..1);
+            if !water_draws.is_empty() {
+                render_pass.set_pipeline(&self.water_pipeline);
+                render_pass.set_bind_group(0, &self.water_bind_group, &[]);
+                // Vertex buffers already bound? Yes, water uses same Global Buffer.
+                // But just in case pipeline change unbinds or we need to be safe:
+                render_pass.set_vertex_buffer(0, self.chunk_buffer_manager.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(
+                    self.chunk_buffer_manager.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+
+                let water_offset = terrain_draw_count as u64 * draw_cmd_size;
+                for i in 0..water_draw_count {
+                    render_pass.draw_indexed_indirect(
+                        &self.chunk_buffer_manager.indirect_buffer,
+                        water_offset + (i as u64) * draw_cmd_size,
+                    );
+                }
             }
 
             // 4. Draw Players

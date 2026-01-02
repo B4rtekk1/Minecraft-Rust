@@ -1,0 +1,509 @@
+warning: unused import: `wgpu::util::DeviceExt`
+ --> src\render\buffer_manager.rs:2:5
+  |
+2 | use wgpu::util::DeviceExt;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `Read` and `Write`
+ --> src\save.rs:4:37
+  |
+4 | use std::io::{BufReader, BufWriter, Read, Write};
+  |                                     ^^^^  ^^^^^
+
+warning: field `noise_ore` is never read
+  --> src\world\generator.rs:27:5
+   |
+14 | pub struct ChunkGenerator {
+   |            -------------- field in this struct
+...
+27 |     noise_ore: FastNoiseLite,
+   |     ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `simplex_ore` is never read
+  --> src\world\terrain.rs:24:5
+   |
+11 | pub struct World {
+   |            ----- field in this struct
+...
+24 |     simplex_ore: Simplex,
+   |     ^^^^^^^^^^^
+
+warning: method `get_ore_at` is never used
+   --> src\world\terrain.rs:400:8
+    |
+ 29 | impl World {
+    | ---------- method in this implementation
+...
+400 |     fn get_ore_at(&self, x: i32, y: i32, z: i32) -> Option<BlockType> {
+    |        ^^^^^^^^^^
+
+warning: `render3d` (lib) generated 5 warnings (run `cargo fix --lib -p render3d` to apply 2 suggestions)
+warning: unused import: `Write`
+ --> src\multiplayer\protocol.rs:1:55
+  |
+1 | use std::io::{Cursor, Error, ErrorKind, Read, Result, Write};
+  |                                                       ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::multiplayer::quic::QuicServer`
+ --> src\multiplayer\server.rs:2:5
+  |
+2 | use crate::multiplayer::quic::QuicServer;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::multiplayer::tcp::TcpServer`
+ --> src\multiplayer\server.rs:3:5
+  |
+3 | use crate::multiplayer::tcp::TcpServer;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `mpsc`
+ --> src\multiplayer\tcp.rs:9:27
+  |
+9 | use tokio::sync::{RwLock, mpsc};
+  |                           ^^^^
+
+warning: unused imports: `ClientConfig`, `ClientEvent`, `ConnectionState`, and `GameClient`
+  --> src\multiplayer\mod.rs:11:18
+   |
+11 | pub use client::{ClientConfig, ClientEvent, ConnectionState, GameClient};
+   |                  ^^^^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused imports: `Packet` and `PlayerId`
+  --> src\multiplayer\mod.rs:12:20
+   |
+12 | pub use protocol::{Packet, PlayerId};
+   |                    ^^^^^^  ^^^^^^^^
+
+warning: unused imports: `QuicClient`, `QuicConnection`, and `QuicServer`
+  --> src\multiplayer\mod.rs:13:16
+   |
+13 | pub use quic::{QuicClient, QuicConnection, QuicServer};
+   |                ^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused imports: `GameServer`, `PlayerInfo`, `ServerConfig`, and `ServerEvent`
+  --> src\multiplayer\mod.rs:14:18
+   |
+14 | pub use server::{GameServer, PlayerInfo, ServerConfig, ServerEvent};
+   |                  ^^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^
+
+warning: unused imports: `TcpClient`, `TcpConnection`, and `TcpServer`
+  --> src\multiplayer\mod.rs:15:15
+   |
+15 | pub use tcp::{TcpClient, TcpConnection, TcpServer};
+   |               ^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `transport::TransportType`
+  --> src\multiplayer\mod.rs:16:9
+   |
+16 | pub use transport::TransportType;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `tokio::io::AsyncWriteExt`
+  --> src\multiplayer\quic.rs:86:17
+   |
+86 |             use tokio::io::AsyncWriteExt;
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+    --> src\app\game.rs:1742:13
+     |
+1742 |         let mut chunks_rendered = 0u32;
+     |             ----^^^^^^^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> src\app\game.rs:1743:13
+     |
+1743 |         let mut subchunks_rendered = 0u32;
+     |             ----^^^^^^^^^^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: unused variable: `chunks_rendered`
+    --> src\app\game.rs:1742:13
+     |
+1742 |         let mut chunks_rendered = 0u32;
+     |             ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_chunks_rendered`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `subchunks_rendered`
+    --> src\app\game.rs:1743:13
+     |
+1743 |         let mut subchunks_rendered = 0u32;
+     |             ^^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_subchunks_rendered`
+
+warning: fields `reflection_render_pipeline`, `reflection_uniform_buffer`, `reflection_uniform_bind_group`, and `network_client` are never read
+   --> src\app\game.rs:67:5
+    |
+ 61 | struct State {
+    |        ----- fields in this struct
+...
+ 67 |     reflection_render_pipeline: wgpu::RenderPipeline,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 80 |     reflection_uniform_buffer: wgpu::Buffer,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+ 81 |     reflection_uniform_bind_group: wgpu::BindGroup,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+117 |     network_client: Option<TcpClient>,
+    |     ^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: enum `ClientEvent` is never used
+  --> src\multiplayer\client.rs:10:10
+   |
+10 | pub enum ClientEvent {
+   |          ^^^^^^^^^^^
+
+warning: enum `ConnectionState` is never used
+  --> src\multiplayer\client.rs:24:10
+   |
+24 | pub enum ConnectionState {
+   |          ^^^^^^^^^^^^^^^
+
+warning: struct `GameClient` is never constructed
+  --> src\multiplayer\client.rs:32:12
+   |
+32 | pub struct GameClient {
+   |            ^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src\multiplayer\client.rs:43:12
+    |
+ 42 | impl GameClient {
+    | --------------- associated items in this implementation
+ 43 |     pub fn new(transport_type: TransportType) -> Self {
+    |            ^^^
+...
+ 58 |     pub fn take_event_receiver(&mut self) -> Option<mpsc::UnboundedReceiver<ClientEvent>> {
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+ 63 |     pub async fn connect(&mut self, address: &str, username: &str) -> Result<()> {
+    |                  ^^^^^^^
+...
+134 |     pub async fn send(&self, packet: &Packet) -> Result<()> {
+    |                  ^^^^
+...
+155 |     pub async fn recv(&self) -> Result<Packet> {
+    |                  ^^^^
+...
+176 |     pub fn handle_packet(&self, packet: Packet) {
+    |            ^^^^^^^^^^^^^
+...
+226 |     pub async fn disconnect(&mut self) -> Result<()> {
+    |                  ^^^^^^^^^^
+...
+255 |     pub fn state(&self) -> ConnectionState {
+    |            ^^^^^
+...
+260 |     pub fn is_connected(&self) -> bool {
+    |            ^^^^^^^^^^^^
+...
+265 |     pub fn player_id(&self) -> Option<PlayerId> {
+    |            ^^^^^^^^^
+...
+270 |     pub fn transport_type(&self) -> TransportType {
+    |            ^^^^^^^^^^^^^^
+...
+275 |     pub async fn send_position(&self, x: f32, y: f32, z: f32) -> Result<()> {
+    |                  ^^^^^^^^^^^^^
+...
+290 |     pub async fn send_rotation(&self, yaw: u8, pitch: u8) -> Result<()> {
+    |                  ^^^^^^^^^^^^^
+...
+304 |     pub async fn send_block_change(&self, x: i32, y: i32, z: i32, block_type: u8) -> Result<()> {
+    |                  ^^^^^^^^^^^^^^^^^
+...
+315 |     pub async fn send_chat(&self, message: &str) -> Result<()> {
+    |                  ^^^^^^^^^
+...
+328 |     pub async fn send_ping(&self) -> Result<()> {
+    |                  ^^^^^^^^^
+
+warning: struct `ClientConfig` is never constructed
+   --> src\multiplayer\client.rs:339:12
+    |
+339 | pub struct ClientConfig {
+    |            ^^^^^^^^^^^^
+
+warning: method `full_address` is never used
+   --> src\multiplayer\client.rs:358:12
+    |
+357 | impl ClientConfig {
+    | ----------------- method in this implementation
+358 |     pub fn full_address(&self) -> String {
+    |            ^^^^^^^^^^^^
+
+warning: constant `READ_BUFFER_SIZE` is never used
+  --> src\multiplayer\quic.rs:16:7
+   |
+16 | const READ_BUFFER_SIZE: usize = 4096;
+   |       ^^^^^^^^^^^^^^^^
+
+warning: function `generate_self_signed_cert` is never used
+  --> src\multiplayer\quic.rs:19:4
+   |
+19 | fn generate_self_signed_cert() -> Result<(Vec<CertificateDer<'static>>, PrivatePkcs8KeyDer<'static>)>
+   |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `QuicConnection` is never constructed
+  --> src\multiplayer\quic.rs:31:12
+   |
+31 | pub struct QuicConnection {
+   |            ^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src\multiplayer\quic.rs:39:18
+    |
+ 38 | impl QuicConnection {
+    | ------------------- associated items in this implementation
+ 39 |     pub async fn new(connection: Connection) -> Result<Self> {
+    |                  ^^^
+...
+ 56 |     pub async fn from_incoming(connection: Connection) -> Result<Self> {
+    |                  ^^^^^^^^^^^^^
+...
+ 73 |     pub fn remote_address(&self) -> SocketAddr {
+    |            ^^^^^^^^^^^^^^
+...
+ 77 |     pub async fn send(&self, packet: &Packet) -> Result<()> {
+    |                  ^^^^
+...
+ 94 |     pub async fn recv(&self) -> Result<Packet> {
+    |                  ^^^^
+...
+128 |     pub async fn close(&self) -> Result<()> {
+    |                  ^^^^^
+...
+134 |     pub fn is_connected(&self) -> bool {
+    |            ^^^^^^^^^^^^
+
+warning: struct `QuicServer` is never constructed
+   --> src\multiplayer\quic.rs:140:12
+    |
+140 | pub struct QuicServer {
+    |            ^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src\multiplayer\quic.rs:148:18
+    |
+147 | impl QuicServer {
+    | --------------- associated items in this implementation
+148 |     pub async fn bind(addr: &str) -> Result<Self> {
+    |                  ^^^^
+...
+172 |     pub async fn accept(&self) -> Result<(u32, Arc<QuicConnection>)> {
+    |                  ^^^^^^
+...
+201 |     pub async fn broadcast(&self, packet: &Packet) -> Result<()> {
+    |                  ^^^^^^^^^
+...
+212 |     pub async fn broadcast_except(&self, packet: &Packet, except_id: u32) -> Result<()> {
+    |                  ^^^^^^^^^^^^^^^^
+...
+225 |     pub async fn remove_client(&self, id: u32) {
+    |                  ^^^^^^^^^^^^^
+...
+233 |     pub async fn client_count(&self) -> usize {
+    |                  ^^^^^^^^^^^^
+...
+238 |     pub fn stop(&self) {
+    |            ^^^^
+...
+243 |     pub fn is_running(&self) -> bool {
+    |            ^^^^^^^^^^
+
+warning: struct `QuicClient` is never constructed
+   --> src\multiplayer\quic.rs:249:12
+    |
+249 | pub struct QuicClient {
+    |            ^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src\multiplayer\quic.rs:255:12
+    |
+254 | impl QuicClient {
+    | --------------- associated items in this implementation
+255 |     pub fn new() -> Self {
+    |            ^^^
+...
+262 |     pub async fn connect(&mut self, addr: &str) -> Result<()> {
+    |                  ^^^^^^^
+...
+308 |     pub fn connection(&self) -> Option<&Arc<QuicConnection>> {
+    |            ^^^^^^^^^^
+...
+312 |     pub async fn send(&self, packet: &Packet) -> Result<()> {
+    |                  ^^^^
+...
+319 |     pub async fn recv(&self) -> Result<Packet> {
+    |                  ^^^^
+...
+326 |     pub async fn disconnect(&mut self) -> Result<()> {
+    |                  ^^^^^^^^^^
+...
+337 |     pub fn is_connected(&self) -> bool {
+    |            ^^^^^^^^^^^^
+
+warning: struct `SkipServerVerification` is never constructed
+   --> src\multiplayer\quic.rs:353:8
+    |
+353 | struct SkipServerVerification;
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `PlayerInfo` is never constructed
+  --> src\multiplayer\server.rs:12:12
+   |
+12 | pub struct PlayerInfo {
+   |            ^^^^^^^^^^
+
+warning: enum `ServerEvent` is never used
+  --> src\multiplayer\server.rs:24:10
+   |
+24 | pub enum ServerEvent {
+   |          ^^^^^^^^^^^
+
+warning: struct `GameServer` is never constructed
+  --> src\multiplayer\server.rs:34:12
+   |
+34 | pub struct GameServer {
+   |            ^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src\multiplayer\server.rs:42:12
+    |
+ 41 | impl GameServer {
+    | --------------- associated items in this implementation
+ 42 |     pub fn new(transport_type: TransportType) -> Self {
+    |            ^^^
+...
+ 54 |     pub fn take_event_receiver(&mut self) -> Option<mpsc::UnboundedReceiver<ServerEvent>> {
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+ 59 |     pub fn transport_type(&self) -> TransportType {
+    |            ^^^^^^^^^^^^^^
+...
+ 64 |     pub async fn handle_packet(&self, player_id: PlayerId, packet: Packet) -> Result<()> {
+    |                  ^^^^^^^^^^^^^
+...
+151 |     pub async fn remove_player(&self, player_id: PlayerId) {
+    |                  ^^^^^^^^^^^^^
+...
+160 |     pub async fn get_players(&self) -> Vec<PlayerInfo> {
+    |                  ^^^^^^^^^^^
+...
+166 |     pub async fn player_count(&self) -> usize {
+    |                  ^^^^^^^^^^^^
+
+warning: struct `ServerConfig` is never constructed
+   --> src\multiplayer\server.rs:173:12
+    |
+173 | pub struct ServerConfig {
+    |            ^^^^^^^^^^^^
+
+warning: method `bind_address` is never used
+   --> src\multiplayer\server.rs:192:12
+    |
+191 | impl ServerConfig {
+    | ----------------- method in this implementation
+192 |     pub fn bind_address(&self) -> String {
+    |            ^^^^^^^^^^^^
+
+warning: methods `close` and `is_connected` are never used
+  --> src\multiplayer\tcp.rs:72:18
+   |
+21 | impl TcpConnection {
+   | ------------------ methods in this implementation
+...
+72 |     pub async fn close(&self) -> Result<()> {
+   |                  ^^^^^
+...
+79 |     pub fn is_connected(&self) -> bool {
+   |            ^^^^^^^^^^^^
+
+warning: field `running` is never read
+  --> src\multiplayer\tcp.rs:89:5
+   |
+85 | pub struct TcpServer {
+   |            --------- field in this struct
+...
+89 |     running: AtomicBool,
+   |     ^^^^^^^
+
+warning: methods `broadcast`, `client_count`, `stop`, and `is_running` are never used
+   --> src\multiplayer\tcp.rs:128:18
+    |
+ 92 | impl TcpServer {
+    | -------------- methods in this implementation
+...
+128 |     pub async fn broadcast(&self, packet: &Packet) -> Result<()> {
+    |                  ^^^^^^^^^
+...
+160 |     pub async fn client_count(&self) -> usize {
+    |                  ^^^^^^^^^^^^
+...
+165 |     pub fn stop(&self) {
+    |            ^^^^
+...
+169 |     pub fn is_running(&self) -> bool {
+    |            ^^^^^^^^^^
+
+warning: methods `connection`, `disconnect`, and `is_connected` are never used
+   --> src\multiplayer\tcp.rs:197:12
+    |
+180 | impl TcpClient {
+    | -------------- methods in this implementation
+...
+197 |     pub fn connection(&self) -> Option<&Arc<TcpConnection>> {
+    |            ^^^^^^^^^^
+...
+215 |     pub async fn disconnect(&mut self) -> Result<()> {
+    |                  ^^^^^^^^^^
+...
+223 |     pub fn is_connected(&self) -> bool {
+    |            ^^^^^^^^^^^^
+
+warning: trait `Transport` is never used
+ --> src\multiplayer\transport.rs:5:11
+  |
+5 | pub trait Transport: Send + Sync {
+  |           ^^^^^^^^^
+
+warning: enum `TransportType` is never used
+  --> src\multiplayer\transport.rs:21:10
+   |
+21 | pub enum TransportType {
+   |          ^^^^^^^^^^^^^
+
+warning: associated items `new`, `select_field`, `clear_error`, and `is_editing` are never used
+   --> src\ui\menu.rs:66:12
+    |
+ 64 | impl MenuState {
+    | -------------- associated items in this implementation
+ 65 |     /// Creates a new `MenuState` with default values.
+ 66 |     pub fn new() -> Self {
+    |            ^^^
+...
+113 |     pub fn select_field(&mut self, field: MenuField) {
+    |            ^^^^^^^^^^^^
+...
+118 |     pub fn clear_error(&mut self) {
+    |            ^^^^^^^^^^^
+...
+133 |     pub fn is_editing(&self) -> bool {
+    |            ^^^^^^^^^^
+
+warning: `render3d` (bin "render3d") generated 44 warnings (run `cargo fix --bin "render3d" -p render3d` to apply 14 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.70s

@@ -4,15 +4,15 @@ use crate::constants::*;
 use crate::core::block::BlockType;
 use crate::frustum::AABB;
 
+use crate::core::BufferAllocation;
+
 pub struct SubChunk {
     pub blocks: [[[BlockType; CHUNK_SIZE as usize]; SUBCHUNK_HEIGHT as usize]; CHUNK_SIZE as usize],
     pub is_empty: bool,
     pub mesh_dirty: bool,
-    pub vertex_buffer: Option<wgpu::Buffer>,
-    pub index_buffer: Option<wgpu::Buffer>,
+    pub buffer_allocation: Option<BufferAllocation>,
+    pub water_buffer_allocation: Option<BufferAllocation>,
     pub num_indices: u32,
-    pub water_vertex_buffer: Option<wgpu::Buffer>,
-    pub water_index_buffer: Option<wgpu::Buffer>,
     pub num_water_indices: u32,
     pub aabb: AABB,
     pub is_fully_opaque: bool,
@@ -30,11 +30,9 @@ impl SubChunk {
             is_empty: true,
             is_fully_opaque: false,
             mesh_dirty: true,
-            vertex_buffer: None,
-            index_buffer: None,
+            buffer_allocation: None,
+            water_buffer_allocation: None,
             num_indices: 0,
-            water_vertex_buffer: None,
-            water_index_buffer: None,
             num_water_indices: 0,
             aabb: AABB::new(
                 Vector3::new(world_x as f32, world_y as f32, world_z as f32),
