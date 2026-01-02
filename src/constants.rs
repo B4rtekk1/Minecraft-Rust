@@ -1,3 +1,4 @@
+// World constants
 pub const WORLD_HEIGHT: i32 = 256;
 pub const CHUNK_SIZE: i32 = 16;
 pub const SUBCHUNK_HEIGHT: i32 = 16;
@@ -31,3 +32,11 @@ pub const ATLAS_SIZE: u32 = 4;
 pub const MAX_CHUNKS_PER_FRAME: usize = 4;
 pub const MAX_MESH_BUILDS_PER_FRAME: usize = 6;
 pub const ASYNC_WORKER_COUNT: usize = 4;
+
+// Player constants
+pub const PLAYER_HEIGHT: f32 = 1.8;
+pub const PLAYER_CROUCH_HEIGHT: f32 = 1.5;
+pub const PLAYER_WIDTH: f32 = 0.35;
+pub const PLAYER_BASE_SPEED: f32 = 4.5;
+pub const PLAYER_SPRINT_SPEED: f32 = 6.5;
+pub const PLAYER_JUMP_HEIGHT: f32 = 1.0;

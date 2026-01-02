@@ -1,6 +1,7 @@
 use cgmath::{Matrix4, Point3, Vector3, prelude::*};
 
 use crate::block::BlockType;
+use crate::constants::*;
 use crate::input::InputState;
 use crate::world::World;
 
@@ -83,10 +84,18 @@ impl Camera {
 
         let (base_speed, gravity, max_fall_speed, jump_velocity, horizontal_drag, vertical_drag) =
             if self.in_water {
-                let speed = if input.sprint { 5.0 } else { 3.0 };
+                let speed = if input.sprint {
+                    PLAYER_SPRINT_SPEED * 0.331
+                } else {
+                    PLAYER_BASE_SPEED * 0.331
+                };
                 (speed, 6.0, 3.0, 4.0, 0.9, 0.95)
             } else {
-                let speed = if input.sprint { 12.0 } else { 6.0 };
+                let speed = if input.sprint {
+                    PLAYER_SPRINT_SPEED
+                } else {
+                    PLAYER_BASE_SPEED
+                };
                 (speed, 25.0, 50.0, 8.0, 1.0, 1.0)
             };
 
