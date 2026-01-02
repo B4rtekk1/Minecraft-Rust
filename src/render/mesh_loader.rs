@@ -1,4 +1,4 @@
-use crate::vertex::Vertex;
+use crate::core::vertex::Vertex;
 use crate::world::World;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use std::sync::Arc;

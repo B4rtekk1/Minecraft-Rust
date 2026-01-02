@@ -10,9 +10,9 @@ use std::thread;
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 
-use crate::chunk::Chunk;
-use crate::chunk_generator::ChunkGenerator;
 use crate::constants::ASYNC_WORKER_COUNT;
+use crate::core::chunk::Chunk;
+use crate::world::generator::ChunkGenerator;
 
 /// Request for chunk generation with priority
 #[derive(Clone)]

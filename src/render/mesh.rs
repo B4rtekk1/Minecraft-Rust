@@ -1,4 +1,4 @@
-use crate::vertex::Vertex;
+use crate::core::vertex::Vertex;
 
 pub fn add_quad(
     vertices: &mut Vec<Vertex>,

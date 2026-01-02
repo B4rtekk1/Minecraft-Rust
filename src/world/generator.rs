@@ -5,10 +5,10 @@
 
 use fastnoise_lite::{FastNoiseLite, FractalType, NoiseType};
 
-use crate::biome::Biome;
-use crate::block::BlockType;
-use crate::chunk::Chunk;
 use crate::constants::*;
+use crate::core::biome::Biome;
+use crate::core::block::BlockType;
+use crate::core::chunk::Chunk;
 
 /// Thread-safe chunk generator with pre-configured FastNoiseLite instances
 pub struct ChunkGenerator {
@@ -623,7 +623,7 @@ impl ChunkGenerator {
         lx: i32,
         y: i32,
         lz: i32,
-        biome: Biome,
+        _biome: Biome,
         is_large: bool,
     ) {
         let trunk_height = if is_large { 8 } else { 5 };

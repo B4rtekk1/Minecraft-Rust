@@ -1,7 +1,13 @@
 /// Procedural Sky Shader
 ///
-/// Renders a realistic sky with localized sunrise/sunset colors.
-/// The sunset gradient is centered around the sun's position.
+/// Renders a highly realistic atmospheric sky with:
+/// - Accurate day/night blending
+/// - Localized, vibrant sunrise/sunset centered precisely on the sun
+/// - Proper horizon glow and color banding
+/// - Smooth sun disk halo
+/// - Special underwater mode with subtle animated water tint
+///
+/// Optimized for fullscreen quad rendering (sky dome replacement)
 
 struct Uniforms {
     view_proj: mat4x4<f32>,
@@ -11,13 +17,16 @@ struct Uniforms {
     time: f32,
     sun_position: vec3<f32>,
     is_underwater: f32,
+    // Padding to match other shaders' bind group layout (zero cost)
+    _pad1: vec2<f32>,
+    _pad2: f32,
+    _pad3: f32,
 };
-
 
 @group(0) @binding(0)
 var<uniform> uniforms: Uniforms;
 
-// Dummy bindings to match uniform bind group layout
+// Dummy bindings to keep bind group layout identical across shaders
 @group(0) @binding(1)
 var texture_atlas: texture_2d_array<f32>;
 @group(0) @binding(2)
@@ -28,7 +37,7 @@ var shadow_map: texture_depth_2d;
 var shadow_sampler: sampler_comparison;
 
 struct VertexInput {
-    @location(0) position: vec3<f32>,
+    @location(0) position: vec3<f32>,  // Expected: fullscreen quad (-1..1, -1..1, 0)
     @location(1) normal: vec3<f32>,
     @location(2) color: vec3<f32>,
     @location(3) uv: vec2<f32>,
@@ -40,133 +49,108 @@ struct VertexOutput {
     @location(0) ndc_pos: vec2<f32>,
 };
 
-const PI: f32 = 3.14159265359;
-
 /// Vertex shader for fullscreen sky quad
+/// Places sky at far plane so it renders behind all world geometry
 @vertex
 fn vs_sky(model: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    // Position the quad at far plane (z = 0.9999 so it's behind everything)
     out.clip_position = vec4<f32>(model.position.xy, 0.9999, 1.0);
     out.ndc_pos = model.position.xy;
     return out;
 }
 
-/// Calculate sky color with localized sunrise/sunset gradient
+/// Reconstruct world-space view direction from NDC coordinates
+fn get_view_direction(ndc_xy: vec2<f32>) -> vec3<f32> {
+    let ndc = vec4<f32>(ndc_xy, 1.0, 1.0);
+    let world_pos_hom = uniforms.inv_view_proj * ndc;
+    let world_pos = world_pos_hom.xyz / world_pos_hom.w;
+    return normalize(world_pos - uniforms.camera_pos);
+}
+
+/// Calculate atmospheric sky color with localized sunrise/sunset
 fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
     let sun_height = sun_dir.y;
     
-    // Time-of-day factors
+    // Time-of-day blending factors
     let day_factor = clamp(sun_height, 0.0, 1.0);
     let night_factor = clamp(-sun_height, 0.0, 1.0);
     let sunset_factor = 1.0 - abs(sun_height);
     
-    // Vertical gradient: darker at zenith, lighter at horizon
-    let view_height = view_dir.y;
+    // View altitude (how high we're looking)
+    let view_altitude = view_dir.y;
+    let height_factor = clamp(view_altitude * 0.5 + 0.5, 0.0, 1.0);
     
-    // Angle between view direction and sun direction
-    let view_horizontal_vec = vec3<f32>(view_dir.x, 0.0, view_dir.z);
-    let sun_horizontal_vec = vec3<f32>(sun_dir.x, 0.0, sun_dir.z);
+    // Horizontal projection for azimuth alignment
+    let view_horiz = normalize(vec3<f32>(view_dir.x, 0.0, view_dir.z));
+    let sun_horiz = normalize(vec3<f32>(sun_dir.x, 0.0, sun_dir.z));
+    let cos_azimuth = dot(view_horiz, sun_horiz);
     
-    let v_len = length(view_horizontal_vec);
-    let s_len = length(sun_horizontal_vec);
+    // Precise 3D angle to sun
+    let cos_theta = dot(view_dir, sun_dir);
     
-    var cos_angle_horizontal = 0.0;
-    if (v_len > 0.0001 && s_len > 0.0001) {
-        cos_angle_horizontal = dot(view_horizontal_vec / v_len, sun_horizontal_vec / s_len);
-    }
+    // Base sky gradients
+    let day_zenith = vec3<f32>(0.25, 0.45, 0.85);
+    let day_horizon = vec3<f32>(0.65, 0.80, 0.95);
+    let night_zenith = vec3<f32>(0.002, 0.002, 0.010);
+    let night_horizon = vec3<f32>(0.015, 0.015, 0.030);
+
+    var sky = mix(day_horizon, day_zenith, height_factor) * day_factor;
+    sky += mix(night_horizon, night_zenith, height_factor) * night_factor;
     
-    // 3D angle to sun for zenith/nadir gradient and sun glow
-    let cos_angle_3d = dot(normalize(view_dir), normalize(sun_dir));
-    
-    // --- BASE SKY COLORS ---
-    let zenith_day = vec3<f32>(0.25, 0.45, 0.85);
-    let horizon_day = vec3<f32>(0.6, 0.75, 0.95);
-    let zenith_night = vec3<f32>(0.001, 0.001, 0.008);
-    let horizon_night = vec3<f32>(0.01, 0.01, 0.02);
-    
-    // Interpolate based on how high we're looking
-    let height_factor = clamp(view_height * 0.5 + 0.5, 0.0, 1.0);
-    var sky_color = mix(horizon_day, zenith_day, height_factor) * day_factor;
-    sky_color += mix(horizon_night, zenith_night, height_factor) * night_factor;
-    
-    // --- LOCALIZED SUNSET/SUNRISE EFFECT ---
+    // --- SUNRISE / SUNSET ---
     if sunset_factor > 0.01 && sun_height > -0.3 {
-        // Sunset/sunrise colors
-        let sunset_orange = vec3<f32>(1.0, 0.4, 0.1);
-        let sunset_red = vec3<f32>(0.9, 0.2, 0.05);
-        let sunset_yellow = vec3<f32>(1.0, 0.7, 0.3);
-        let sunset_pink = vec3<f32>(0.95, 0.5, 0.6);
-        
-        // Use 3D angle for more accurate sunset positioning relative to the actual sun
-        // but still use some horizontal bias for the "band" effect
-        let sun_proximity_3d = max(0.0, cos_angle_3d);
-        let sun_proximity_horiz = max(0.0, cos_angle_horizontal);
-        
-        // Mix 3D and horizontal proximity for a natural look
-        let sun_proximity = mix(sun_proximity_horiz, sun_proximity_3d, 0.5);
-        
-        // Different falloff rates for varied color bands
-        let glow_tight = pow(sun_proximity_3d, 32.0); // Very tight core follow 3D exactly
-        let glow_medium = pow(sun_proximity, 4.0);
-        let glow_wide = pow(sun_proximity, 1.5);
-        
-        // Intensity based on how close sun is to horizon
         let sunset_intensity = smoothstep(-0.2, 0.1, sun_height) * smoothstep(0.6, 0.0, sun_height);
         
-        // Horizon band effect - sunset colors are stronger near horizon
-        let horizon_band = 1.0 - abs(view_height);
-        let horizon_boost = pow(horizon_band, 0.5) * smoothstep(0.0, 0.1, v_len);
+        // Proximity measures
+        let proximity_3d = max(0.0, cos_theta);
+        let proximity_azimuth = max(0.0, cos_azimuth);
+        let proximity = mix(proximity_azimuth, proximity_3d, 0.5);
         
-        // Build up the sunset color
+        // Color layers with different falloffs
+        let glow_core = pow(proximity_3d, 64.0);           // Tight yellow/white core
+        let glow_near = pow(proximity, 8.0);              // Orange band
+        let glow_wide = pow(proximity, 2.5);              // Red outer band
+        
+        // Horizon enhancement
+        let horizon_strength = pow(1.0 - abs(view_altitude), 0.7);
+        let horizon_boost = horizon_strength * smoothstep(0.0, 0.15, length(view_horiz));
+
         var sunset_color = vec3<f32>(0.0);
+        sunset_color += vec3<f32>(1.0, 0.85, 0.4) * glow_core * 1.5;           // Bright core
+        sunset_color += vec3<f32>(1.0, 0.45, 0.1) * glow_near * 1.2 * horizon_boost;
+        sunset_color += vec3<f32>(0.9, 0.25, 0.1) * glow_wide * 0.8 * horizon_boost;
         
-        // Yellow core follow 3D position exactly
-        sunset_color += sunset_yellow * glow_tight * 1.2;
-        
-        // Orange/Red bands spread along horizon but centered on sun
-        sunset_color += sunset_orange * glow_medium * 0.8 * horizon_boost;
-        sunset_color += sunset_red * glow_wide * 0.5 * horizon_boost;
-        
-        // Pink tones near the sun (gentle falloff for smooth blending)
-        let pink_glow = pow(max(0.0, cos_angle_horizontal), 2.5) * 0.4;
-        sunset_color += sunset_pink * pink_glow * horizon_band;
-        
-        sky_color = mix(sky_color, sky_color + sunset_color, sunset_intensity);
+        // Soft pink scattering opposite the sun
+        let opposite_glow = pow(max(0.0, -cos_azimuth), 3.0) * 0.3;
+        sunset_color += vec3<f32>(0.95, 0.55, 0.7) * opposite_glow * horizon_strength;
+
+        sky = mix(sky, sky + sunset_color, sunset_intensity);
     }
     
-    // Add slight sun glow halo (Daytime halo)
+    // Daytime sun halo (subtle, not overblown)
     if day_factor > 0.1 {
-        let sun_glow = pow(max(0.0, cos_angle_3d), 128.0) * day_factor;
-        sky_color += vec3<f32>(1.0, 0.95, 0.9) * sun_glow;
+        let sun_halo = pow(max(0.0, cos_theta), 256.0) * day_factor * 2.0;
+        sky += vec3<f32>(1.0, 0.98, 0.9) * sun_halo;
     }
-    
-    return clamp(sky_color, vec3<f32>(0.0), vec3<f32>(1.0));
+
+    return clamp(sky, vec3<f32>(0.0), vec3<f32>(1.5)); // Allow slight overbright for bloom
 }
 
-/// Fragment shader - compute sky color for each pixel
+/// Fragment shader - final sky color per pixel
 @fragment
 fn fs_sky(in: VertexOutput) -> @location(0) vec4<f32> {
-    // If underwater, show water color instead of sky
+    // Underwater: render as dark murky water instead of sky
     if uniforms.is_underwater > 0.5 {
-        // Dark blue-green water color with subtle movement
-        let wave = sin(in.ndc_pos.x * 3.0 + uniforms.time * 2.0) * 
-                   sin(in.ndc_pos.y * 2.0 + uniforms.time * 1.5) * 0.05;
-        let water_color = vec3<f32>(0.05 + wave, 0.15 + wave, 0.3 + wave);
-        return vec4<f32>(water_color, 1.0);
+        let noise = sin(in.ndc_pos.x * 4.0 + uniforms.time * 1.8) * 0.5 + 0.5;
+        let wave = sin(in.ndc_pos.y * 3.0 + uniforms.time * 2.2) * noise * 0.08;
+        let underwater_tint = vec3<f32>(0.03, 0.10, 0.25) + vec3<f32>(wave);
+        return vec4<f32>(underwater_tint, 1.0);
     }
-    
+
     let sun_dir = normalize(uniforms.sun_position);
-    
-    // Use inv_view_proj to get the world-space view direction
-    // NDC position is in.ndc_pos (x, y), we assume z=1.0 for the far plane
-    let ndc = vec4<f32>(in.ndc_pos, 1.0, 1.0);
-    let world_pos_4 = uniforms.inv_view_proj * ndc;
-    let world_pos = world_pos_4.xyz / world_pos_4.w;
-    let view_dir = normalize(world_pos - uniforms.camera_pos);
-    
+    let view_dir = get_view_direction(in.ndc_pos);
+
     let sky_color = calculate_sky_color(view_dir, sun_dir);
-    
+
     return vec4<f32>(sky_color, 1.0);
 }
-

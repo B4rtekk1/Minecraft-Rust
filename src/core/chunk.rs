@@ -1,7 +1,7 @@
 use cgmath::Vector3;
 
-use crate::block::BlockType;
 use crate::constants::*;
+use crate::core::block::BlockType;
 use crate::frustum::AABB;
 
 pub struct SubChunk {

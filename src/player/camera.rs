@@ -1,8 +1,8 @@
 use cgmath::{Matrix4, Point3, Vector3, prelude::*};
 
-use crate::block::BlockType;
 use crate::constants::*;
-use crate::input::InputState;
+use crate::core::block::BlockType;
+use crate::player::input::InputState;
 use crate::world::World;
 
 pub struct Camera {

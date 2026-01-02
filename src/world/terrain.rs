@@ -1,12 +1,12 @@
 use noise::{NoiseFn, Simplex};
 use std::collections::HashMap;
 
-use crate::biome::Biome;
-use crate::block::BlockType;
-use crate::chunk::Chunk;
 use crate::constants::*;
-use crate::mesh::add_quad;
-use crate::vertex::Vertex;
+use crate::core::biome::Biome;
+use crate::core::block::BlockType;
+use crate::core::chunk::Chunk;
+use crate::core::vertex::Vertex;
+use crate::render::mesh::add_quad;
 
 pub struct World {
     pub chunks: HashMap<(i32, i32), Chunk>,

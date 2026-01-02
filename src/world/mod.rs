@@ -1,0 +1,11 @@
+//! World generation and management modules
+//! Contains chunk generation, loading, and world state.
+
+pub mod generator;
+pub mod loader;
+pub mod terrain;
+
+// Re-export commonly used types
+pub use generator::ChunkGenerator;
+pub use loader::{ChunkGenResult, ChunkLoader};
+pub use terrain::World;
