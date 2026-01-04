@@ -69,6 +69,8 @@ struct State {
     sun_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
+    ssr_render_pipeline: wgpu::RenderPipeline,
+    ssr_sky_pipeline: wgpu::RenderPipeline,
     crosshair_pipeline: wgpu::RenderPipeline,
     sun_vertex_buffer: wgpu::Buffer,
     sun_index_buffer: wgpu::Buffer,
@@ -81,6 +83,7 @@ struct State {
     reflection_uniform_bind_group: wgpu::BindGroup,
     shadow_bind_group: wgpu::BindGroup,
     depth_texture: wgpu::TextureView,
+    msaa_texture_view: wgpu::TextureView,
     shadow_texture_view: wgpu::TextureView,
     #[allow(dead_code)]
     shadow_sampler: wgpu::Sampler,
@@ -202,7 +205,12 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        let depth_texture = Self::create_depth_texture(&device, &config);
+        // MSAA sample count (4x MSAA for quality anti-aliasing)
+        let msaa_sample_count: u32 = 4;
+
+        let depth_texture = Self::create_depth_texture(&device, &config, msaa_sample_count);
+        let msaa_texture_view =
+            Self::create_msaa_texture(&device, &config, surface_format, msaa_sample_count);
 
         let terrain_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Terrain Shader"),
@@ -400,13 +408,13 @@ impl State {
 
         let texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Texture Sampler"),
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            address_mode_w: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            anisotropy_clamp: 16,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            anisotropy_clamp: 1,
             ..Default::default()
         });
 
@@ -783,7 +791,11 @@ impl State {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: msaa_sample_count,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview_mask: None,
         });
 
@@ -822,7 +834,11 @@ impl State {
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
-                multisample: wgpu::MultisampleState::default(),
+                multisample: wgpu::MultisampleState {
+                    count: msaa_sample_count,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
                 multiview_mask: None,
             });
 
@@ -859,7 +875,11 @@ impl State {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: msaa_sample_count,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview_mask: None,
         });
 
@@ -890,7 +910,11 @@ impl State {
                 ..Default::default()
             },
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview_mask: None,
         });
 
@@ -918,7 +942,11 @@ impl State {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview_mask: None,
         });
 
@@ -955,7 +983,11 @@ impl State {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: msaa_sample_count,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview_mask: None,
         });
 
@@ -993,7 +1025,95 @@ impl State {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: msaa_sample_count,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+        });
+
+        // SSR Render Pipeline - same as render_pipeline but with sample_count: 1 for SSR textures
+        let ssr_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("SSR Render Pipeline"),
+            layout: Some(&pipeline_layout),
+            cache: None,
+            vertex: wgpu::VertexState {
+                module: &terrain_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Vertex::desc()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &terrain_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+        });
+
+        // SSR Sky Pipeline - same as sky_pipeline but with sample_count: 1 for SSR textures
+        let ssr_sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("SSR Sky Pipeline"),
+            layout: Some(&pipeline_layout),
+            cache: None,
+            vertex: wgpu::VertexState {
+                module: &sky_shader,
+                entry_point: Some("vs_sky"),
+                compilation_options: Default::default(),
+                buffers: &[Vertex::desc()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &sky_shader,
+                entry_point: Some("fs_sky"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview_mask: None,
         });
 
@@ -1105,6 +1225,8 @@ impl State {
             sun_pipeline,
             sky_pipeline,
             shadow_pipeline,
+            ssr_render_pipeline,
+            ssr_sky_pipeline,
             crosshair_pipeline,
             sun_vertex_buffer,
             sun_index_buffer,
@@ -1117,6 +1239,7 @@ impl State {
             reflection_uniform_bind_group,
             shadow_bind_group,
             depth_texture,
+            msaa_texture_view,
             shadow_texture_view,
             shadow_sampler,
             world,
@@ -1198,6 +1321,7 @@ impl State {
     fn create_depth_texture(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
+        sample_count: u32,
     ) -> wgpu::TextureView {
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Depth Texture"),
@@ -1207,7 +1331,7 @@ impl State {
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
@@ -1216,12 +1340,44 @@ impl State {
         depth_texture.create_view(&wgpu::TextureViewDescriptor::default())
     }
 
+    fn create_msaa_texture(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        format: wgpu::TextureFormat,
+        sample_count: u32,
+    ) -> wgpu::TextureView {
+        let msaa_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("MSAA Texture"),
+            size: wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        msaa_texture.create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
-            self.depth_texture = Self::create_depth_texture(&self.device, &self.config);
+            // MSAA sample count (must match initialization)
+            let msaa_sample_count: u32 = 4;
+            self.depth_texture =
+                Self::create_depth_texture(&self.device, &self.config, msaa_sample_count);
+            self.msaa_texture_view = Self::create_msaa_texture(
+                &self.device,
+                &self.config,
+                self.surface_format,
+                msaa_sample_count,
+            );
 
             // Recreate SSR textures at new size
             self.ssr_color_texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1871,7 +2027,7 @@ impl State {
                 ..Default::default()
             });
 
-            ssr_sky_pass.set_pipeline(&self.sky_pipeline);
+            ssr_sky_pass.set_pipeline(&self.ssr_sky_pipeline);
             ssr_sky_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             ssr_sky_pass.set_vertex_buffer(0, self.sun_vertex_buffer.slice(..));
             ssr_sky_pass
@@ -1903,7 +2059,7 @@ impl State {
                 ..Default::default()
             });
 
-            ssr_terrain_pass.set_pipeline(&self.render_pipeline);
+            ssr_terrain_pass.set_pipeline(&self.ssr_render_pipeline);
             ssr_terrain_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             for (vb, ib, num_indices, _) in &visible_terrain {
                 ssr_terrain_pass.set_vertex_buffer(0, vb.slice(..));
@@ -1917,8 +2073,8 @@ impl State {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Main Scene Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
+                    view: &self.msaa_texture_view,
+                    resolve_target: Some(&view),
                     depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
