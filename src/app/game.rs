@@ -1756,8 +1756,16 @@ impl State {
             .min(1.0);
 
         // Collect visible subchunks first to avoid borrowing issues
-        let mut visible_terrain: Vec<(wgpu::Buffer, wgpu::Buffer, u32)> = Vec::new();
-        let mut visible_water: Vec<(wgpu::Buffer, wgpu::Buffer, u32)> = Vec::new();
+        // Tuple: (vertex_buffer, index_buffer, num_indices, distance_squared)
+        let mut visible_terrain: Vec<(wgpu::Buffer, wgpu::Buffer, u32, f32)> = Vec::new();
+        // Water doesn't need sorting (transparent, rendered back-to-front naturally with alpha blend)
+        let mut visible_water: Vec<(wgpu::Buffer, wgpu::Buffer, u32, f32)> = Vec::new();
+
+        let cam_pos = cgmath::Vector3::new(
+            self.camera.position.x,
+            self.camera.position.y,
+            self.camera.position.z,
+        );
 
         {
             let world = self.world.read();
@@ -1776,6 +1784,16 @@ impl State {
                             if world.is_subchunk_occluded(cx, cz, subchunk_idx as i32) {
                                 continue;
                             }
+
+                            // Calculate subchunk center for distance sorting
+                            let center_x = (subchunk.aabb.min.x + subchunk.aabb.max.x) * 0.5;
+                            let center_y = (subchunk.aabb.min.y + subchunk.aabb.max.y) * 0.5;
+                            let center_z = (subchunk.aabb.min.z + subchunk.aabb.max.z) * 0.5;
+                            let dx = center_x - cam_pos.x;
+                            let dy = center_y - cam_pos.y;
+                            let dz = center_z - cam_pos.z;
+                            let dist_sq = dx * dx + dy * dy + dz * dz;
+
                             // Collect terrain geometry
                             if subchunk.num_indices > 0 {
                                 if let (Some(vb), Some(ib)) =
@@ -1785,12 +1803,13 @@ impl State {
                                         vb.clone(),
                                         ib.clone(),
                                         subchunk.num_indices,
+                                        dist_sq,
                                     ));
                                     subchunks_rendered += 1;
                                     chunk_visible = true;
                                 }
                             }
-                            // Collect water geometry
+                            // Collect water geometry (back-to-front for proper alpha blending)
                             if subchunk.num_water_indices > 0 {
                                 if let (Some(vb), Some(ib)) =
                                     (&subchunk.water_vertex_buffer, &subchunk.water_index_buffer)
@@ -1799,6 +1818,7 @@ impl State {
                                         vb.clone(),
                                         ib.clone(),
                                         subchunk.num_water_indices,
+                                        dist_sq,
                                     ));
                                 }
                             }
@@ -1810,6 +1830,14 @@ impl State {
                 }
             }
         }
+
+        // Sort terrain front-to-back for early-z rejection (reduces overdraw)
+        visible_terrain
+            .sort_unstable_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Sort water back-to-front for correct alpha blending
+        visible_water
+            .sort_unstable_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
 
         self.chunks_rendered = chunks_rendered;
         self.subchunks_rendered = subchunks_rendered;
@@ -1877,7 +1905,7 @@ impl State {
 
             ssr_terrain_pass.set_pipeline(&self.render_pipeline);
             ssr_terrain_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            for (vb, ib, num_indices) in &visible_terrain {
+            for (vb, ib, num_indices, _) in &visible_terrain {
                 ssr_terrain_pass.set_vertex_buffer(0, vb.slice(..));
                 ssr_terrain_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                 ssr_terrain_pass.draw_indexed(0..*num_indices, 0, 0..1);
@@ -1924,7 +1952,7 @@ impl State {
             // 2. Draw Terrain
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            for (vb, ib, num_indices) in &visible_terrain {
+            for (vb, ib, num_indices, _) in &visible_terrain {
                 render_pass.set_vertex_buffer(0, vb.slice(..));
                 render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                 render_pass.draw_indexed(0..*num_indices, 0, 0..1);
@@ -1933,7 +1961,7 @@ impl State {
             // 3. Draw Water (Reflective)
             render_pass.set_pipeline(&self.water_pipeline);
             render_pass.set_bind_group(0, &self.water_bind_group, &[]);
-            for (vb, ib, num_indices) in &visible_water {
+            for (vb, ib, num_indices, _) in &visible_water {
                 render_pass.set_vertex_buffer(0, vb.slice(..));
                 render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                 render_pass.draw_indexed(0..*num_indices, 0, 0..1);

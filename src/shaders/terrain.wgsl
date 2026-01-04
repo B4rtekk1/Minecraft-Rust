@@ -90,12 +90,12 @@ fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
     // Angle between view direction and sun direction
     let view_horizontal_vec = vec3<f32>(view_dir.x, 0.0, view_dir.z);
     let sun_horizontal_vec = vec3<f32>(sun_dir.x, 0.0, sun_dir.z);
-    
+
     let v_len = length(view_horizontal_vec);
     let s_len = length(sun_horizontal_vec);
-    
+
     var cos_angle_horizontal = 0.0;
-    if (v_len > 0.0001 && s_len > 0.0001) {
+    if v_len > 0.0001 && s_len > 0.0001 {
         cos_angle_horizontal = dot(view_horizontal_vec / v_len, sun_horizontal_vec / s_len);
     }
     
@@ -107,7 +107,7 @@ fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
     let horizon_day = vec3<f32>(0.6, 0.75, 0.95);
     let zenith_night = vec3<f32>(0.001, 0.001, 0.008);
     let horizon_night = vec3<f32>(0.01, 0.01, 0.02);
-    
+
     let height_factor = clamp(view_height * 0.5 + 0.5, 0.0, 1.0);
     var sky_color = mix(horizon_day, zenith_day, height_factor) * day_factor;
     sky_color += mix(horizon_night, zenith_night, height_factor) * night_factor;
@@ -118,36 +118,36 @@ fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
         let sunset_red = vec3<f32>(0.9, 0.2, 0.05);
         let sunset_yellow = vec3<f32>(1.0, 0.7, 0.3);
         let sunset_pink = vec3<f32>(0.95, 0.5, 0.6);
-        
+
         let sun_proximity_3d = max(0.0, cos_angle_3d);
         let sun_proximity_horiz = max(0.0, cos_angle_horizontal);
         let sun_proximity = mix(sun_proximity_horiz, sun_proximity_3d, 0.5);
-        
+
         let glow_tight = pow(sun_proximity_3d, 32.0);
         let glow_medium = pow(sun_proximity, 4.0);
         let glow_wide = pow(sun_proximity, 1.5);
-        
+
         let sunset_intensity = smoothstep(-0.2, 0.1, sun_height) * smoothstep(0.6, 0.0, sun_height);
-        
+
         let horizon_band = 1.0 - abs(view_height);
         let horizon_boost = pow(horizon_band, 0.5) * smoothstep(0.0, 0.1, v_len);
-        
+
         var sunset_color = vec3<f32>(0.0);
         sunset_color += sunset_yellow * glow_tight * 1.2;
         sunset_color += sunset_orange * glow_medium * 0.8 * horizon_boost;
         sunset_color += sunset_red * glow_wide * 0.5 * horizon_boost;
-        
+
         let opposite_glow = max(0.0, -cos_angle_horizontal) * 0.2;
         sunset_color += sunset_pink * opposite_glow * horizon_band * smoothstep(0.0, 0.1, v_len);
-        
+
         sky_color = mix(sky_color, sky_color + sunset_color, sunset_intensity);
     }
-    
+
     if day_factor > 0.1 {
         let sun_glow = pow(max(0.0, cos_angle_3d), 128.0) * day_factor;
         sky_color += vec3<f32>(1.0, 0.95, 0.9) * sun_glow;
     }
-    
+
     return clamp(sky_color, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
@@ -173,7 +173,7 @@ fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>)
     if sun_dir.y < 0.05 {
         return 0.0;
     }
-    
+
     // No normal-based offset - rely on pipeline depth bias to prevent shadow acne
     // This ensures shadows start exactly at object bases
     let offset_world_pos = world_pos;
@@ -181,7 +181,7 @@ fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>)
     // Project world coordinates to shadow map UVs
     let shadow_pos = uniforms.sun_view_proj * vec4<f32>(offset_world_pos, 1.0);
     let shadow_coords = shadow_pos.xyz / shadow_pos.w;
-    
+
     let uv = vec2<f32>(
         shadow_coords.x * 0.5 + 0.5,
         1.0 - (shadow_coords.y * 0.5 + 0.5)
@@ -197,7 +197,7 @@ fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>)
         min(uv.y, 1.0 - uv.y)
     ) / edge_fade;
     let edge_shadow_blend = clamp(edge_factor, 0.0, 1.0);
-    
+
     let receiver_depth = shadow_coords.z;
     
     // Minimal adaptive bias to prevent shadow acne without causing visible offset
@@ -210,12 +210,12 @@ fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>)
     // Randomize sample rotation per pixel using world-space noise
     let noise = world_space_noise(world_pos);
     let rotation_angle = noise * 2.0 * PI;
-    
+
     let texel_size = 1.0 / SHADOW_MAP_SIZE;
     let filter_radius = 3.5 * texel_size;
-    
+
     var shadow: f32 = 0.0;
-    
+
     // Accumulate shadow samples
     for (var i: i32 = 0; i < PCF_SAMPLES; i++) {
         let offset = vogel_disk_sample(i, PCF_SAMPLES, rotation_angle) * filter_radius;
@@ -226,12 +226,12 @@ fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>)
             receiver_depth - bias
         );
     }
-    
+
     shadow /= f32(PCF_SAMPLES);
     
     // Re-map shadow intensity for better contrast
     shadow = smoothstep(0.05, 0.95, shadow);
-    
+
     return mix(1.0, shadow, edge_shadow_blend);
 }
 
@@ -244,7 +244,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if tex_sample.a < 0.5 {
         discard;
     }
-    
+
     let tex_color = tex_sample.rgb;
     let sun_dir = normalize(uniforms.sun_position);
     
@@ -254,8 +254,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // --- LIGHTING MODEL ---
     
     // Time-of-day factors
-    let day_factor = clamp(sun_dir.y, 0.0, 1.0); 
-    let night_factor = clamp(-sun_dir.y, 0.0, 1.0); 
+    let day_factor = clamp(sun_dir.y, 0.0, 1.0);
+    let night_factor = clamp(-sun_dir.y, 0.0, 1.0);
     let sunset_factor = 1.0 - abs(sun_dir.y); 
     // Twilight factor - active during sunrise/sunset transition
     let twilight_factor = smoothstep(-0.1, 0.15, sun_dir.y) * smoothstep(0.4, 0.0, sun_dir.y);
@@ -296,11 +296,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     } else {
         face_shade = 0.8; // Z-sides
     }
-    
+
     let effective_face_shade = mix(1.0, face_shade, day_factor + 0.3);
-    
+
     let lighting = (ambient + sun_diffuse + fill_diffuse) * effective_face_shade;
-    
+
     var lit_color = tex_color * lighting;
     
     // Apply sunset tint to lit surfaces
@@ -310,7 +310,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     
     // --- FOG CALCULATION ---
-    
+
     let dist = length(in.world_pos.xz - uniforms.camera_pos.xz);
     
     // Check if underwater
@@ -319,7 +319,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Visibility range depends on time of day and underwater state
     var visibility_range: f32;
     var fog_color: vec3<f32>;
-    
+
     if is_underwater {
         // Underwater: very short visibility, blue-green tint
         visibility_range = 24.0;
@@ -337,12 +337,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let twilight_blend = max(day_factor, twilight_factor * 0.7);
         fog_color = mix(night_fog_color, sky_color, twilight_blend);
     }
-    
+
     let fog_start = visibility_range * 0.2;
     let fog_end = visibility_range;
-    
+
     let visibility = clamp((fog_end - dist) / (fog_end - fog_start), 0.0, 1.0);
-    
+
     var final_color = mix(fog_color, lit_color, visibility);
     
     // Apply underwater color filter
@@ -352,14 +352,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         final_color = final_color * water_tint;
         
         // Add subtle caustic-like brightness variations
-        let caustic = sin(in.world_pos.x * 0.5 + uniforms.time * 2.0) * 
-                      sin(in.world_pos.z * 0.5 + uniforms.time * 1.5) * 0.1 + 0.9;
+        let caustic = sin(in.world_pos.x * 0.5 + uniforms.time * 2.0) * sin(in.world_pos.z * 0.5 + uniforms.time * 1.5) * 0.1 + 0.9;
         final_color = final_color * caustic;
         
         // Darken with depth (simulate light absorption)
         let depth_factor = clamp(dist / visibility_range, 0.0, 1.0);
         final_color = mix(final_color, fog_color, depth_factor * 0.5);
     }
-    
+
     return vec4<f32>(final_color, 1.0);
 }
