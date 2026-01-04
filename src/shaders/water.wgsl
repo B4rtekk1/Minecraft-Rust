@@ -61,22 +61,113 @@ struct VertexOutput {
     @location(4) tex_index: f32,
 };
 
+// ============================================================================
+// GERSTNER WAVES - Realistic ocean wave simulation
+// ============================================================================
+
+/// Single Gerstner wave calculation
+/// Returns: vec3(horizontal_displacement_x, vertical_displacement, horizontal_displacement_z)
+/// 
+/// Gerstner waves create realistic circular orbital motion of water particles,
+/// producing sharper peaks and flatter troughs than simple sine waves.
+fn gerstner_wave(
+    pos: vec2<f32>,        // XZ world position
+    time: f32,             // Animation time
+    wavelength: f32,       // Distance between wave crests
+    amplitude: f32,        // Wave height
+    steepness: f32,        // 0-1, controls sharpness (Q factor)
+    direction: vec2<f32>   // Normalized wave direction
+) -> vec3<f32> {
+    let k = 2.0 * 3.14159265359 / wavelength;  // Wave number
+    let c = sqrt(9.8 / k);                      // Phase speed (gravity-based)
+    let d = normalize(direction);
+    let f = k * (dot(d, pos) - c * time);       // Phase
+
+    let a = steepness / k;  // Amplitude adjusted by steepness
+
+    return vec3<f32>(
+        d.x * a * cos(f),   // X displacement (horizontal)
+        amplitude * sin(f), // Y displacement (vertical height)
+        d.y * a * cos(f)    // Z displacement (horizontal)
+    );
+}
+
+/// Calculate combined Gerstner waves with LOD (Level of Detail)
+/// Waves fade out based on distance to camera for performance
+fn calculate_gerstner_displacement(pos: vec3<f32>, time: f32, camera_pos: vec3<f32>) -> vec3<f32> {
+    // Distance-based LOD factor
+    let dist = length(pos.xz - camera_pos.xz);
+    
+    // Fade waves from 0-80 blocks (full detail to no detail)
+    let lod_near = 0.0;
+    let lod_far = 80.0;
+    let lod_factor = 1.0 - clamp((dist - lod_near) / (lod_far - lod_near), 0.0, 1.0);
+    
+    // Early exit for distant water (save GPU cycles)
+    if lod_factor < 0.01 {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+    
+    // Smooth LOD transition (ease out)
+    let smooth_lod = lod_factor * lod_factor;
+
+    var displacement = vec3<f32>(0.0, 0.0, 0.0);
+    let p = pos.xz;
+    
+    // Wave 1: Primary swell (slow, realistic)
+    displacement += gerstner_wave(
+        p, time * 0.5,             // slow ocean swell
+        10.0,                      // wavelength
+        0.07 * smooth_lod,         // amplitude
+        0.15,                      // low steepness = stable at shores
+        vec2<f32>(1.0, 0.3)        // direction
+    );
+    
+    // Wave 2: Secondary swell (crossing angle)
+    displacement += gerstner_wave(
+        p, time * 0.4,
+        6.0,
+        0.032 * smooth_lod,
+        0.12,
+        vec2<f32>(0.7, 0.7)
+    );
+    
+    // Wave 3: Gentle chop
+    displacement += gerstner_wave(
+        p, time * 0.7,
+        4.0,
+        0.023 * smooth_lod,
+        0.1,
+        vec2<f32>(-0.5, 0.8)
+    );
+    
+    // Wave 4: Fine ripples - only close up
+    let detail_lod = smooth_lod * smooth_lod;
+    displacement += gerstner_wave(
+        p, time * 1.0,
+        2.0,
+        0.015 * detail_lod,
+        0.08,
+        vec2<f32>(0.2, -0.9)
+    );
+
+    return displacement;
+}
+
 /// Water Vertex Shader
 ///
-/// Displaces the y-coordinate of top-facing faces using multiple sine waves
-/// to create a dynamic liquid surface.
+/// Displaces water vertices using Gerstner waves for realistic ocean-like motion.
+/// Uses only vertical (Y) displacement to prevent water from separating at shores.
+/// LOD reduces wave detail at distance for better performance.
 @vertex
 fn vs_water(model: VertexInput) -> VertexOutput {
     var out: VertexOutput;
 
     var pos = model.position;
     if model.normal.y > 0.5 {
-        // Multi-layered sine wave displacement
-        let wave1 = sin(pos.x * 0.4 + uniforms.time * 2.1) * 0.05;
-        let wave2 = sin(pos.z * 0.5 + uniforms.time * 1.8) * 0.04;
-        let wave3 = sin((pos.x + pos.z) * 0.25 + uniforms.time * 2.8) * 0.035;
-        let wave4 = sin((pos.x * 0.3 - pos.z * 0.4) + uniforms.time * 2.3) * 0.025;
-        pos.y += wave1 + wave2 + wave3 + wave4;
+        // Apply Gerstner wave displacement - Y only (no horizontal to prevent shore gaps)
+        let wave_offset = calculate_gerstner_displacement(pos, uniforms.time, uniforms.camera_pos);
+        pos.y += wave_offset.y;
         
         // Slightly lower water level to prevent z-fighting with adjacent solid blocks
         pos.y -= 0.15;
@@ -414,8 +505,12 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     } else {
         // SSR + sky fallback
         let ssr_result = ssr_trace(in.world_pos, reflect_dir_ssr, in.clip_position);
-        if ssr_result.w > 0.0 {
-            let ssr_blend = ssr_result.w * 0.85 * ssr_distance_fade;
+        // Smooth the confidence to reduce flickering during movement
+        // Use higher threshold (0.15) and smoothstep to create gradual transitions
+        let smoothed_confidence = smoothstep(0.15, 0.7, ssr_result.w);
+        if smoothed_confidence > 0.01 {
+            // Reduce max blend to 0.75 to always keep some sky influence for stability
+            let ssr_blend = smoothed_confidence * 0.75 * ssr_distance_fade;
             reflection_color = mix(sky_color, ssr_result.rgb, ssr_blend);
         }
     }
