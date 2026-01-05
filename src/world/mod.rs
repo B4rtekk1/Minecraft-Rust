@@ -3,6 +3,7 @@
 
 pub mod generator;
 pub mod loader;
+pub mod structures;
 pub mod terrain;
 
 // Re-export commonly used types

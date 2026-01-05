@@ -66,8 +66,8 @@ pub use constants::*;
 pub use core::{Biome, BlockType, Chunk, SubChunk, Uniforms, Vertex};
 pub use player::{Camera, DiggingState, InputState};
 pub use render::{
-    AABB, MeshLoader, add_quad, build_crosshair, build_player_model, extract_frustum_planes,
-    generate_texture_atlas, load_texture_atlas_from_file,
+    AABB, IndirectManager, MeshLoader, SubchunkKey, add_quad, build_crosshair, build_player_model,
+    extract_frustum_planes, generate_texture_atlas, load_texture_atlas_from_file,
 };
 pub use save::{DEFAULT_WORLD_FILE, SavedWorld, load_world, save_world};
 pub use world::{ChunkGenResult, ChunkGenerator, ChunkLoader, World};

@@ -44,10 +44,11 @@ struct Args {
 use render3d::chunk_loader::ChunkLoader;
 use render3d::{
     ASYNC_WORKER_COUNT, BlockType, CHUNK_SIZE, Camera, DEFAULT_WORLD_FILE, DiggingState,
-    GENERATION_DISTANCE, InputState, MAX_CHUNKS_PER_FRAME, MAX_MESH_BUILDS_PER_FRAME,
-    NUM_SUBCHUNKS, RENDER_DISTANCE, SUBCHUNK_HEIGHT, SavedWorld, TEXTURE_SIZE, Uniforms, Vertex,
-    World, build_crosshair, build_player_model, extract_frustum_planes, generate_texture_atlas,
-    load_texture_atlas_from_file, load_world, save_world,
+    GENERATION_DISTANCE, IndirectManager, InputState, MAX_CHUNKS_PER_FRAME,
+    MAX_MESH_BUILDS_PER_FRAME, NUM_SUBCHUNKS, RENDER_DISTANCE, SUBCHUNK_HEIGHT, SavedWorld,
+    SubchunkKey, TEXTURE_SIZE, Uniforms, Vertex, World, build_crosshair, build_player_model,
+    extract_frustum_planes, generate_texture_atlas, load_texture_atlas_from_file, load_world,
+    save_world,
 };
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -170,6 +171,8 @@ struct State {
     composite_bind_group: wgpu::BindGroup,
     scene_color_texture: wgpu::Texture,
     scene_color_view: wgpu::TextureView,
+    // GPU Indirect Drawing
+    indirect_manager: IndirectManager,
 }
 
 impl State {
@@ -1808,6 +1811,9 @@ impl State {
 
         // ============== END SSAO INITIALIZATION ==============
 
+        // Create IndirectManager before Self (device is moved into Self)
+        let indirect_manager = IndirectManager::new(&device);
+
         Self {
             surface,
             device,
@@ -1917,6 +1923,8 @@ impl State {
             composite_bind_group,
             scene_color_texture,
             scene_color_view,
+            // GPU Indirect Drawing
+            indirect_manager,
         }
     }
 
