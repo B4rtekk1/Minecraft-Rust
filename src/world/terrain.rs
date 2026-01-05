@@ -6,7 +6,7 @@ use crate::core::biome::Biome;
 use crate::core::block::BlockType;
 use crate::core::chunk::Chunk;
 use crate::core::vertex::Vertex;
-use crate::render::mesh::add_quad;
+use crate::render::mesh::{add_greedy_quad, add_quad};
 use crate::world::structures::{House, Structure};
 
 pub struct World {
@@ -1193,6 +1193,48 @@ impl World {
                 .unwrap_or(BlockType::Air)
         };
 
+        // ============= GREEDY MESHING IMPLEMENTATION =============
+        //
+        // Instead of creating one quad per visible block face, we merge adjacent faces
+        // of the same type into larger quads. This reduces vertex count by 50-90%.
+        //
+        // Algorithm:
+        // 1. First pass: Handle special blocks (stairs) with naive approach
+        // 2. For each face direction, for each slice perpendicular to that direction:
+        //    a. Build a 2D mask of visible faces with their attributes
+        //    b. Greedily merge adjacent faces with matching attributes
+        //    c. Emit merged quads with tiled UVs
+
+        // Face attributes for greedy merge comparison
+        #[derive(Clone, Copy, PartialEq)]
+        struct FaceAttrs {
+            block: BlockType,
+            color: [u8; 3], // Quantized color for comparison
+            tex_index: u8,
+            is_active: bool,
+        }
+
+        impl Default for FaceAttrs {
+            fn default() -> Self {
+                FaceAttrs {
+                    block: BlockType::Air,
+                    color: [0, 0, 0],
+                    tex_index: 0,
+                    is_active: false,
+                }
+            }
+        }
+
+        // Helper to quantize color for comparison (avoids floating point issues)
+        let quantize_color = |c: [f32; 3]| -> [u8; 3] {
+            [
+                (c[0] * 255.0) as u8,
+                (c[1] * 255.0) as u8,
+                (c[2] * 255.0) as u8,
+            ]
+        };
+
+        // First pass: Handle special blocks (WoodStairs, etc.) with naive approach
         for lx in 0..CHUNK_SIZE {
             for ly in 0..SUBCHUNK_HEIGHT {
                 for lz in 0..CHUNK_SIZE {
@@ -1212,11 +1254,8 @@ impl World {
                         (&mut vertices, &mut indices)
                     };
 
+                    // Handle stairs with naive approach (complex geometry)
                     if block == BlockType::WoodStairs {
-                        // Stair geometry generation (North facing for now: +Z is back, steps go up towards back)
-                        // Lower slab: 0.0-0.5 Y, full X/Z
-                        // Upper slab: 0.5-1.0 Y, 0.5-1.0 Z
-
                         let x = world_x as f32;
                         let y_f = y as f32;
                         let z = world_z as f32;
@@ -1227,15 +1266,15 @@ impl World {
                         let m = block.metallic();
 
                         let neighbors = [
-                            get_block_fast(world_x - 1, y, world_z), // -X
-                            get_block_fast(world_x + 1, y, world_z), // +X
-                            get_block_fast(world_x, y - 1, world_z), // -Y
-                            get_block_fast(world_x, y + 1, world_z), // +Y
-                            get_block_fast(world_x, y, world_z - 1), // -Z
-                            get_block_fast(world_x, y, world_z + 1), // +Z
+                            get_block_fast(world_x - 1, y, world_z),
+                            get_block_fast(world_x + 1, y, world_z),
+                            get_block_fast(world_x, y - 1, world_z),
+                            get_block_fast(world_x, y + 1, world_z),
+                            get_block_fast(world_x, y, world_z - 1),
+                            get_block_fast(world_x, y, world_z + 1),
                         ];
 
-                        // 1. Bottom Face (-Y)
+                        // Bottom Face (-Y)
                         if block.should_render_face_against(neighbors[2]) {
                             add_quad(
                                 target_verts,
@@ -1251,8 +1290,7 @@ impl World {
                                 m,
                             );
                         }
-
-                        // 2. Top Face of Bottom Slab (Y=0.5, Z=0.0-0.5 exposed)
+                        // Top of bottom slab
                         add_quad(
                             target_verts,
                             target_inds,
@@ -1266,8 +1304,7 @@ impl World {
                             r,
                             m,
                         );
-
-                        // 3. Top Face of Top Slab (Y=1.0, Z=0.5-1.0) - if +Y neighbor visible
+                        // Top of top slab
                         if block.should_render_face_against(neighbors[3]) {
                             add_quad(
                                 target_verts,
@@ -1283,8 +1320,7 @@ impl World {
                                 m,
                             );
                         }
-
-                        // 4. Front Face (-Z): Lower slab front
+                        // Front face (-Z)
                         if block.should_render_face_against(neighbors[4]) {
                             add_quad(
                                 target_verts,
@@ -1300,9 +1336,7 @@ impl World {
                                 m,
                             );
                         }
-
-                        // 5. Riser (Internal, -Z normal): Upper slab front face (at Z=0.5)
-                        // Always render this as it faces the empty space above the bottom slab
+                        // Riser
                         add_quad(
                             target_verts,
                             target_inds,
@@ -1316,8 +1350,7 @@ impl World {
                             r,
                             m,
                         );
-
-                        // 6. Back Face (+Z): Full face (Lower + Upper)
+                        // Back face (+Z)
                         if block.should_render_face_against(neighbors[5]) {
                             add_quad(
                                 target_verts,
@@ -1333,10 +1366,8 @@ impl World {
                                 m,
                             );
                         }
-
-                        // 7. Left Face (-X)
+                        // Left face (-X)
                         if block.should_render_face_against(neighbors[0]) {
-                            // Lower part
                             add_quad(
                                 target_verts,
                                 target_inds,
@@ -1350,7 +1381,6 @@ impl World {
                                 r,
                                 m,
                             );
-                            // Upper part (back half)
                             add_quad(
                                 target_verts,
                                 target_inds,
@@ -1365,10 +1395,8 @@ impl World {
                                 m,
                             );
                         }
-
-                        // 8. Right Face (+X)
+                        // Right face (+X)
                         if block.should_render_face_against(neighbors[1]) {
-                            // Lower part
                             add_quad(
                                 target_verts,
                                 target_inds,
@@ -1382,7 +1410,6 @@ impl World {
                                 r,
                                 m,
                             );
-                            // Upper part (back half)
                             add_quad(
                                 target_verts,
                                 target_inds,
@@ -1397,150 +1424,439 @@ impl World {
                                 m,
                             );
                         }
-
                         continue;
                     }
 
-                    // Check all 6 neighbors using cached chunks
-                    let neighbors = [
-                        get_block_fast(world_x - 1, y, world_z),
-                        get_block_fast(world_x + 1, y, world_z),
-                        get_block_fast(world_x, y - 1, world_z),
-                        get_block_fast(world_x, y + 1, world_z),
-                        get_block_fast(world_x, y, world_z - 1),
-                        get_block_fast(world_x, y, world_z + 1),
-                    ];
+                    // Water uses naive approach (transparency requires per-block handling)
+                    if is_water {
+                        let neighbors = [
+                            get_block_fast(world_x - 1, y, world_z),
+                            get_block_fast(world_x + 1, y, world_z),
+                            get_block_fast(world_x, y - 1, world_z),
+                            get_block_fast(world_x, y + 1, world_z),
+                            get_block_fast(world_x, y, world_z - 1),
+                            get_block_fast(world_x, y, world_z + 1),
+                        ];
 
-                    for (i, neighbor_block) in neighbors.iter().enumerate() {
-                        if block.should_render_face_against(*neighbor_block) {
-                            // Compute biome once per block if needed (grass/leaves)
-                            let needs_biome =
-                                block == BlockType::Grass || block == BlockType::Leaves;
-                            let biome = if needs_biome {
-                                // Check cache first
-                                let lx_idx = lx as usize;
-                                let lz_idx = lz as usize;
-                                if biome_map[lx_idx][lz_idx].is_none() {
-                                    biome_map[lx_idx][lz_idx] =
-                                        Some(self.get_biome(world_x, world_z));
+                        for (i, neighbor) in neighbors.iter().enumerate() {
+                            if block.should_render_face_against(*neighbor) {
+                                let x = world_x as f32;
+                                let y_f = y as f32;
+                                let z = world_z as f32;
+                                let color = block.color();
+                                let tex = block.tex_top() as f32;
+                                let r = block.roughness();
+                                let m = block.metallic();
+
+                                match i {
+                                    0 => add_quad(
+                                        target_verts,
+                                        target_inds,
+                                        [x, y_f, z],
+                                        [x, y_f, z + 1.0],
+                                        [x, y_f + 1.0, z + 1.0],
+                                        [x, y_f + 1.0, z],
+                                        [-1.0, 0.0, 0.0],
+                                        color,
+                                        tex,
+                                        r,
+                                        m,
+                                    ),
+                                    1 => add_quad(
+                                        target_verts,
+                                        target_inds,
+                                        [x + 1.0, y_f, z + 1.0],
+                                        [x + 1.0, y_f, z],
+                                        [x + 1.0, y_f + 1.0, z],
+                                        [x + 1.0, y_f + 1.0, z + 1.0],
+                                        [1.0, 0.0, 0.0],
+                                        color,
+                                        tex,
+                                        r,
+                                        m,
+                                    ),
+                                    2 => add_quad(
+                                        target_verts,
+                                        target_inds,
+                                        [x, y_f, z + 1.0],
+                                        [x, y_f, z],
+                                        [x + 1.0, y_f, z],
+                                        [x + 1.0, y_f, z + 1.0],
+                                        [0.0, -1.0, 0.0],
+                                        color,
+                                        tex,
+                                        r,
+                                        m,
+                                    ),
+                                    3 => add_quad(
+                                        target_verts,
+                                        target_inds,
+                                        [x, y_f + 1.0, z],
+                                        [x, y_f + 1.0, z + 1.0],
+                                        [x + 1.0, y_f + 1.0, z + 1.0],
+                                        [x + 1.0, y_f + 1.0, z],
+                                        [0.0, 1.0, 0.0],
+                                        color,
+                                        tex,
+                                        r,
+                                        m,
+                                    ),
+                                    4 => add_quad(
+                                        target_verts,
+                                        target_inds,
+                                        [x + 1.0, y_f, z],
+                                        [x, y_f, z],
+                                        [x, y_f + 1.0, z],
+                                        [x + 1.0, y_f + 1.0, z],
+                                        [0.0, 0.0, -1.0],
+                                        color,
+                                        tex,
+                                        r,
+                                        m,
+                                    ),
+                                    5 => add_quad(
+                                        target_verts,
+                                        target_inds,
+                                        [x, y_f, z + 1.0],
+                                        [x + 1.0, y_f, z + 1.0],
+                                        [x + 1.0, y_f + 1.0, z + 1.0],
+                                        [x, y_f + 1.0, z + 1.0],
+                                        [0.0, 0.0, 1.0],
+                                        color,
+                                        tex,
+                                        r,
+                                        m,
+                                    ),
+                                    _ => {}
                                 }
-                                biome_map[lx_idx][lz_idx]
-                            } else {
-                                None
-                            };
-
-                            let color = match i {
-                                2 => block.bottom_color(),
-                                3 => {
-                                    if block == BlockType::Grass {
-                                        biome.unwrap().grass_color()
-                                    } else {
-                                        block.top_color()
-                                    }
-                                }
-                                _ => {
-                                    if block == BlockType::Grass {
-                                        block.color()
-                                    } else if block == BlockType::Leaves {
-                                        biome.unwrap().leaves_color()
-                                    } else {
-                                        block.color()
-                                    }
-                                }
-                            };
-
-                            let tex_index = match i {
-                                2 => block.tex_bottom(),
-                                3 => block.tex_top(),
-                                _ => block.tex_side(),
-                            };
-
-                            let x = world_x as f32;
-                            let y_f = y as f32;
-                            let z = world_z as f32;
-
-                            match i {
-                                0 => add_quad(
-                                    target_verts,
-                                    target_inds,
-                                    [x, y_f, z],             // BL
-                                    [x, y_f, z + 1.0],       // BR
-                                    [x, y_f + 1.0, z + 1.0], // TR
-                                    [x, y_f + 1.0, z],       // TL
-                                    [-1.0, 0.0, 0.0],
-                                    color,
-                                    tex_index as f32,
-                                    block.roughness(),
-                                    block.metallic(),
-                                ),
-                                1 => add_quad(
-                                    target_verts,
-                                    target_inds,
-                                    [x + 1.0, y_f, z + 1.0],       // BL
-                                    [x + 1.0, y_f, z],             // BR
-                                    [x + 1.0, y_f + 1.0, z],       // TR
-                                    [x + 1.0, y_f + 1.0, z + 1.0], // TL
-                                    [1.0, 0.0, 0.0],
-                                    color,
-                                    tex_index as f32,
-                                    block.roughness(),
-                                    block.metallic(),
-                                ),
-                                2 => add_quad(
-                                    target_verts,
-                                    target_inds,
-                                    [x, y_f, z + 1.0],       // BL
-                                    [x, y_f, z],             // BR
-                                    [x + 1.0, y_f, z],       // TR
-                                    [x + 1.0, y_f, z + 1.0], // TL
-                                    [0.0, -1.0, 0.0],
-                                    color,
-                                    tex_index as f32,
-                                    block.roughness(),
-                                    block.metallic(),
-                                ),
-                                3 => add_quad(
-                                    target_verts,
-                                    target_inds,
-                                    [x, y_f + 1.0, z],             // BL
-                                    [x, y_f + 1.0, z + 1.0],       // BR
-                                    [x + 1.0, y_f + 1.0, z + 1.0], // TR
-                                    [x + 1.0, y_f + 1.0, z],       // TL
-                                    [0.0, 1.0, 0.0],
-                                    color,
-                                    tex_index as f32,
-                                    block.roughness(),
-                                    block.metallic(),
-                                ),
-                                4 => add_quad(
-                                    target_verts,
-                                    target_inds,
-                                    [x + 1.0, y_f, z],       // BL
-                                    [x, y_f, z],             // BR
-                                    [x, y_f + 1.0, z],       // TR
-                                    [x + 1.0, y_f + 1.0, z], // TL
-                                    [0.0, 0.0, -1.0],
-                                    color,
-                                    tex_index as f32,
-                                    block.roughness(),
-                                    block.metallic(),
-                                ),
-                                5 => add_quad(
-                                    target_verts,
-                                    target_inds,
-                                    [x, y_f, z + 1.0],             // BL
-                                    [x + 1.0, y_f, z + 1.0],       // BR
-                                    [x + 1.0, y_f + 1.0, z + 1.0], // TR
-                                    [x, y_f + 1.0, z + 1.0],       // TL
-                                    [0.0, 0.0, 1.0],
-                                    color,
-                                    tex_index as f32,
-                                    block.roughness(),
-                                    block.metallic(),
-                                ),
-                                _ => {}
                             }
                         }
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Second pass: Greedy meshing for regular solid blocks
+        // Process each of 6 face directions separately
+
+        // Face direction: 0=-X, 1=+X, 2=-Y, 3=+Y, 4=-Z, 5=+Z
+        for face_dir in 0..6 {
+            // Determine slice dimensions based on face direction
+            // For X faces: slices are in YZ plane, iterate over X
+            // For Y faces: slices are in XZ plane, iterate over Y
+            // For Z faces: slices are in XY plane, iterate over Z
+
+            let (slice_count, dim1_size, dim2_size): (i32, i32, i32) = match face_dir {
+                0 | 1 => (CHUNK_SIZE, SUBCHUNK_HEIGHT, CHUNK_SIZE), // X faces: YZ slices
+                2 | 3 => (SUBCHUNK_HEIGHT, CHUNK_SIZE, CHUNK_SIZE), // Y faces: XZ slices
+                4 | 5 => (CHUNK_SIZE, CHUNK_SIZE, SUBCHUNK_HEIGHT), // Z faces: XY slices
+                _ => unreachable!(),
+            };
+
+            // For each slice perpendicular to face direction
+            for slice in 0..slice_count {
+                // Build mask of visible faces in this slice
+                let mut mask: Vec<FaceAttrs> =
+                    vec![FaceAttrs::default(); (dim1_size * dim2_size) as usize];
+
+                for d1 in 0..dim1_size {
+                    for d2 in 0..dim2_size {
+                        // Convert slice coordinates to world coordinates
+                        let (lx, ly, lz): (i32, i32, i32) = match face_dir {
+                            0 | 1 => (slice, d1, d2),
+                            2 | 3 => (d1, slice, d2),
+                            4 | 5 => (d1, d2, slice),
+                            _ => unreachable!(),
+                        };
+
+                        let y = base_y + ly;
+                        let world_x = base_x + lx;
+                        let world_z = base_z + lz;
+                        let block = get_block_fast(world_x, y, world_z);
+
+                        // Skip air, water, and special blocks (handled above)
+                        if block == BlockType::Air
+                            || block == BlockType::Water
+                            || block == BlockType::WoodStairs
+                        {
+                            continue;
+                        }
+
+                        // Get neighbor in face direction
+                        let (nx, ny, nz) = match face_dir {
+                            0 => (world_x - 1, y, world_z),
+                            1 => (world_x + 1, y, world_z),
+                            2 => (world_x, y - 1, world_z),
+                            3 => (world_x, y + 1, world_z),
+                            4 => (world_x, y, world_z - 1),
+                            5 => (world_x, y, world_z + 1),
+                            _ => unreachable!(),
+                        };
+                        let neighbor = get_block_fast(nx, ny, nz);
+
+                        if !block.should_render_face_against(neighbor) {
+                            continue;
+                        }
+
+                        // Compute color (with biome for grass/leaves)
+                        let needs_biome = block == BlockType::Grass || block == BlockType::Leaves;
+                        let biome = if needs_biome {
+                            let lx_idx = lx as usize;
+                            let lz_idx = lz as usize;
+                            if biome_map[lx_idx][lz_idx].is_none() {
+                                biome_map[lx_idx][lz_idx] = Some(self.get_biome(world_x, world_z));
+                            }
+                            biome_map[lx_idx][lz_idx]
+                        } else {
+                            None
+                        };
+
+                        let color = match face_dir {
+                            2 => block.bottom_color(),
+                            3 => {
+                                if block == BlockType::Grass {
+                                    biome.unwrap().grass_color()
+                                } else {
+                                    block.top_color()
+                                }
+                            }
+                            _ => {
+                                if block == BlockType::Grass {
+                                    block.color()
+                                } else if block == BlockType::Leaves {
+                                    biome.unwrap().leaves_color()
+                                } else {
+                                    block.color()
+                                }
+                            }
+                        };
+
+                        let tex_index = match face_dir {
+                            2 => block.tex_bottom(),
+                            3 => block.tex_top(),
+                            _ => block.tex_side(),
+                        };
+
+                        let idx = (d1 * dim2_size + d2) as usize;
+                        mask[idx] = FaceAttrs {
+                            block,
+                            color: quantize_color(color),
+                            tex_index: tex_index as u8,
+                            is_active: true,
+                        };
+                    }
+                }
+
+                // Greedy merge: scan the mask and merge adjacent faces
+                for d1 in 0..dim1_size {
+                    let mut d2 = 0;
+                    while d2 < dim2_size {
+                        let idx = (d1 * dim2_size + d2) as usize;
+                        let face = mask[idx];
+
+                        if !face.is_active {
+                            d2 += 1;
+                            continue;
+                        }
+
+                        // Found an active face, try to extend it
+                        let mut width = 1i32;
+                        while d2 + width < dim2_size {
+                            let next_idx = (d1 * dim2_size + d2 + width) as usize;
+                            if mask[next_idx] == face {
+                                width += 1;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        // Try to extend height (d1 direction)
+                        let mut height = 1i32;
+                        'height_loop: while d1 + height < dim1_size {
+                            for w in 0..width {
+                                let check_idx = ((d1 + height) * dim2_size + d2 + w) as usize;
+                                if mask[check_idx] != face {
+                                    break 'height_loop;
+                                }
+                            }
+                            height += 1;
+                        }
+
+                        // Mark merged faces as inactive
+                        for h in 0..height {
+                            for w in 0..width {
+                                let clear_idx = ((d1 + h) * dim2_size + d2 + w) as usize;
+                                mask[clear_idx].is_active = false;
+                            }
+                        }
+
+                        // Emit the merged quad
+                        let block = face.block;
+                        let color = [
+                            face.color[0] as f32 / 255.0,
+                            face.color[1] as f32 / 255.0,
+                            face.color[2] as f32 / 255.0,
+                        ];
+                        let tex_index = face.tex_index as f32;
+                        let roughness = block.roughness();
+                        let metallic = block.metallic();
+
+                        // Convert slice + d1/d2 + width/height to world coordinates
+                        let (x0, y0, z0, x1, y1, z1) = match face_dir {
+                            0 => {
+                                // -X face
+                                let x = (base_x + slice) as f32;
+                                let y0 = (base_y + d1) as f32;
+                                let z0 = (base_z + d2) as f32;
+                                let y1 = y0 + height as f32;
+                                let z1 = z0 + width as f32;
+                                (x, y0, z0, x, y1, z1)
+                            }
+                            1 => {
+                                // +X face
+                                let x = (base_x + slice + 1) as f32;
+                                let y0 = (base_y + d1) as f32;
+                                let z0 = (base_z + d2) as f32;
+                                let y1 = y0 + height as f32;
+                                let z1 = z0 + width as f32;
+                                (x, y0, z0, x, y1, z1)
+                            }
+                            2 => {
+                                // -Y face
+                                let y = (base_y + slice) as f32;
+                                let x0 = (base_x + d1) as f32;
+                                let z0 = (base_z + d2) as f32;
+                                let x1 = x0 + height as f32;
+                                let z1 = z0 + width as f32;
+                                (x0, y, z0, x1, y, z1)
+                            }
+                            3 => {
+                                // +Y face
+                                let y = (base_y + slice + 1) as f32;
+                                let x0 = (base_x + d1) as f32;
+                                let z0 = (base_z + d2) as f32;
+                                let x1 = x0 + height as f32;
+                                let z1 = z0 + width as f32;
+                                (x0, y, z0, x1, y, z1)
+                            }
+                            4 => {
+                                // -Z face
+                                let z = (base_z + slice) as f32;
+                                let x0 = (base_x + d1) as f32;
+                                let y0 = (base_y + d2) as f32;
+                                let x1 = x0 + height as f32;
+                                let y1 = y0 + width as f32;
+                                (x0, y0, z, x1, y1, z)
+                            }
+                            5 => {
+                                // +Z face
+                                let z = (base_z + slice + 1) as f32;
+                                let x0 = (base_x + d1) as f32;
+                                let y0 = (base_y + d2) as f32;
+                                let x1 = x0 + height as f32;
+                                let y1 = y0 + width as f32;
+                                (x0, y0, z, x1, y1, z)
+                            }
+                            _ => unreachable!(),
+                        };
+
+                        // Emit quad with proper vertex order and tiled UVs
+                        match face_dir {
+                            0 => add_greedy_quad(
+                                &mut vertices,
+                                &mut indices,
+                                [x0, y0, z0],
+                                [x0, y0, z1],
+                                [x0, y1, z1],
+                                [x0, y1, z0],
+                                [-1.0, 0.0, 0.0],
+                                color,
+                                tex_index,
+                                roughness,
+                                metallic,
+                                width as f32,
+                                height as f32,
+                            ),
+                            1 => add_greedy_quad(
+                                &mut vertices,
+                                &mut indices,
+                                [x1, y0, z1],
+                                [x1, y0, z0],
+                                [x1, y1, z0],
+                                [x1, y1, z1],
+                                [1.0, 0.0, 0.0],
+                                color,
+                                tex_index,
+                                roughness,
+                                metallic,
+                                width as f32,
+                                height as f32,
+                            ),
+                            2 => add_greedy_quad(
+                                &mut vertices,
+                                &mut indices,
+                                [x0, y0, z1],
+                                [x0, y0, z0],
+                                [x1, y0, z0],
+                                [x1, y0, z1],
+                                [0.0, -1.0, 0.0],
+                                color,
+                                tex_index,
+                                roughness,
+                                metallic,
+                                width as f32,
+                                height as f32,
+                            ),
+                            3 => add_greedy_quad(
+                                &mut vertices,
+                                &mut indices,
+                                [x0, y1, z0],
+                                [x0, y1, z1],
+                                [x1, y1, z1],
+                                [x1, y1, z0],
+                                [0.0, 1.0, 0.0],
+                                color,
+                                tex_index,
+                                roughness,
+                                metallic,
+                                width as f32,
+                                height as f32,
+                            ),
+                            4 => add_greedy_quad(
+                                &mut vertices,
+                                &mut indices,
+                                [x1, y0, z0],
+                                [x0, y0, z0],
+                                [x0, y1, z0],
+                                [x1, y1, z0],
+                                [0.0, 0.0, -1.0],
+                                color,
+                                tex_index,
+                                roughness,
+                                metallic,
+                                height as f32,
+                                width as f32,
+                            ),
+                            5 => add_greedy_quad(
+                                &mut vertices,
+                                &mut indices,
+                                [x0, y0, z1],
+                                [x1, y0, z1],
+                                [x1, y1, z1],
+                                [x0, y1, z1],
+                                [0.0, 0.0, 1.0],
+                                color,
+                                tex_index,
+                                roughness,
+                                metallic,
+                                height as f32,
+                                width as f32,
+                            ),
+                            _ => {}
+                        }
+
+                        d2 += width;
                     }
                 }
             }

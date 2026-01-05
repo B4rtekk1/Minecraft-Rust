@@ -186,27 +186,7 @@ impl Camera {
             for by in min_y..=max_y {
                 for bz in min_z..=max_z {
                     if world.is_solid(bx, by, bz) {
-                        let block_min_x = bx as f32;
-                        let block_max_x = (bx + 1) as f32;
-                        let block_min_y = by as f32;
-                        let block_max_y = (by + 1) as f32;
-                        let block_min_z = bz as f32;
-                        let block_max_z = (bz + 1) as f32;
-
-                        let player_min_x = x - player_width;
-                        let player_max_x = x + player_width;
-                        let player_min_y = y;
-                        let player_max_y = y + player_height;
-                        let player_min_z = z - player_width;
-                        let player_max_z = z + player_width;
-
-                        if player_max_x > block_min_x
-                            && player_min_x < block_max_x
-                            && player_max_y > block_min_y
-                            && player_min_y < block_max_y
-                            && player_max_z > block_min_z
-                            && player_min_z < block_max_z
-                        {
+                        if check_intersection(Point3::new(x, y, z), bx, by, bz) {
                             return true;
                         }
                     }
@@ -214,6 +194,10 @@ impl Camera {
             }
         }
         false
+    }
+
+    pub fn intersects_block(&self, bx: i32, by: i32, bz: i32) -> bool {
+        check_intersection(self.position, bx, by, bz)
     }
 
     pub fn raycast(&self, world: &World, max_dist: f32) -> Option<(i32, i32, i32, i32, i32, i32)> {
@@ -243,4 +227,30 @@ impl Camera {
         }
         None
     }
+}
+
+pub fn check_intersection(pos: Point3<f32>, bx: i32, by: i32, bz: i32) -> bool {
+    let player_width = 0.35;
+    let player_height = 1.8;
+
+    let block_min_x = bx as f32;
+    let block_max_x = (bx + 1) as f32;
+    let block_min_y = by as f32;
+    let block_max_y = (by + 1) as f32;
+    let block_min_z = bz as f32;
+    let block_max_z = (bz + 1) as f32;
+
+    let player_min_x = pos.x - player_width;
+    let player_max_x = pos.x + player_width;
+    let player_min_y = pos.y;
+    let player_max_y = pos.y + player_height;
+    let player_min_z = pos.z - player_width;
+    let player_max_z = pos.z + player_width;
+
+    player_max_x > block_min_x
+        && player_min_x < block_max_x
+        && player_max_y > block_min_y
+        && player_min_y < block_max_y
+        && player_max_z > block_min_z
+        && player_min_z < block_max_z
 }

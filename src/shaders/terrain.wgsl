@@ -79,7 +79,7 @@ fn vs_shadow(model: VertexInput) -> @builtin(position) vec4<f32> {
 const PI: f32 = 3.14159265359;
 const SHADOW_MAP_SIZE: f32 = 2048.0;
 const GOLDEN_ANGLE: f32 = 2.39996322972865332;
-const PCF_SAMPLES: i32 = 12;
+const PCF_SAMPLES: i32 = 8;
 
 /// Calculate sky color with localized sunrise/sunset gradient
 fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
@@ -281,8 +281,9 @@ fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>)
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Sample block texture from array
-    let tex_sample = textureSample(texture_atlas, texture_sampler, in.uv, i32(in.tex_index + 0.5));
+    // Wrap UV coordinates for greedy meshing (tiled faces may have UV > 1.0)
+    let wrapped_uv = fract(in.uv);
+    let tex_sample = textureSample(texture_atlas, texture_sampler, wrapped_uv, i32(in.tex_index + 0.5));
     
     // Alpha test (for leaves, etc.)
     if tex_sample.a < 0.5 {

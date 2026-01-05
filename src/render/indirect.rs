@@ -11,11 +11,11 @@ use crate::core::vertex::Vertex;
 use crate::render::frustum::AABB;
 
 /// Maximum number of subchunks that can be stored in unified buffers
-const MAX_SUBCHUNKS: usize = 8192;
-/// Maximum vertices across all subchunks (~252MB at 56 bytes per vertex, under 256MB wgpu limit)
+const MAX_SUBCHUNKS: usize = 16384;
+/// Maximum vertices across all subchunks (~252MB at 56 bytes per vertex - under 256MB wgpu limit)
 const MAX_VERTICES: usize = 4_500_000;
-/// Maximum indices across all subchunks (64MB at 4 bytes per index)
-const MAX_INDICES: usize = 16_000_000;
+/// Maximum indices across all subchunks (128MB at 4 bytes per index)
+const MAX_INDICES: usize = 32_000_000;
 
 /// wgpu DrawIndexedIndirect command structure (matches GPU layout)
 #[repr(C)]
@@ -46,6 +46,8 @@ pub struct SubchunkGpuMeta {
 }
 
 /// Culling uniforms - frustum planes + subchunk count
+/// Note: Must match cull.wgsl CullUniforms struct layout exactly
+/// WGSL vec3<u32> has 16-byte alignment, so we need extra padding
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct CullUniforms {
@@ -53,8 +55,9 @@ pub struct CullUniforms {
     pub frustum_planes: [[f32; 4]; 6],
     /// Number of active subchunks
     pub subchunk_count: u32,
-    /// Padding to 16-byte alignment
-    pub _padding: [u32; 3],
+    /// Padding to match WGSL alignment (vec3<u32> is 16 bytes in WGSL)
+    /// Total size must be 128 bytes: 96 (planes) + 4 (count) + 28 (padding) = 128
+    pub _padding: [u32; 7],
 }
 
 /// Key for identifying a subchunk
@@ -294,6 +297,7 @@ impl IndirectManager {
     }
 
     /// Upload a subchunk's mesh data to unified buffers
+    /// Returns true if successful, false if buffer is full
     pub fn upload_subchunk(
         &mut self,
         device: &wgpu::Device,
@@ -302,7 +306,7 @@ impl IndirectManager {
         vertices: &[Vertex],
         indices: &[u32],
         aabb: &AABB,
-    ) {
+    ) -> bool {
         // Remove old allocation if exists
         if let Some(old_alloc) = self.allocations.remove(&key) {
             // For now, we don't reclaim space (simple append-only allocator)
@@ -311,7 +315,7 @@ impl IndirectManager {
         }
 
         if vertices.is_empty() || indices.is_empty() {
-            return;
+            return true; // Empty is considered success (nothing to upload)
         }
 
         let vertex_count = vertices.len() as u32;
@@ -321,15 +325,14 @@ impl IndirectManager {
         if self.next_vertex_offset + vertex_count > MAX_VERTICES as u32
             || self.next_index_offset + index_count > MAX_INDICES as u32
         {
-            // Buffer full - would need compaction in production
-            eprintln!("Warning: Unified buffer full, cannot allocate subchunk");
-            return;
+            // Buffer full - fall back to per-subchunk rendering
+            return false;
         }
 
         let slot_index = self.allocations.len();
         if slot_index >= MAX_SUBCHUNKS {
-            eprintln!("Warning: Max subchunk slots reached");
-            return;
+            // Max slots reached
+            return false;
         }
 
         // Allocate space
@@ -382,6 +385,8 @@ impl IndirectManager {
 
         // Recreate bind group since metadata changed
         self.recreate_bind_group(device);
+
+        true
     }
 
     /// Remove a subchunk
@@ -421,7 +426,7 @@ impl IndirectManager {
         let uniforms = CullUniforms {
             frustum_planes: *frustum_planes,
             subchunk_count: self.active_subchunk_count,
-            _padding: [0; 3],
+            _padding: [0; 7],
         };
         queue.write_buffer(&self.cull_uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
 

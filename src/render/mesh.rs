@@ -60,6 +60,70 @@ pub fn add_quad(
     ]);
 }
 
+/// Add a quad with tiled UVs for greedy meshing
+/// width and height specify how many blocks the quad spans for UV tiling
+pub fn add_greedy_quad(
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+    v0: [f32; 3],
+    v1: [f32; 3],
+    v2: [f32; 3],
+    v3: [f32; 3],
+    normal: [f32; 3],
+    color: [f32; 3],
+    tex_index: f32,
+    roughness: f32,
+    metallic: f32,
+    width: f32,
+    height: f32,
+) {
+    let base_idx = vertices.len() as u32;
+    vertices.push(Vertex {
+        position: v0,
+        normal,
+        color,
+        uv: [0.0, height],
+        tex_index,
+        roughness,
+        metallic,
+    });
+    vertices.push(Vertex {
+        position: v1,
+        normal,
+        color,
+        uv: [width, height],
+        tex_index,
+        roughness,
+        metallic,
+    });
+    vertices.push(Vertex {
+        position: v2,
+        normal,
+        color,
+        uv: [width, 0.0],
+        tex_index,
+        roughness,
+        metallic,
+    });
+    vertices.push(Vertex {
+        position: v3,
+        normal,
+        color,
+        uv: [0.0, 0.0],
+        tex_index,
+        roughness,
+        metallic,
+    });
+    indices.extend_from_slice(&[
+        base_idx,
+        base_idx + 1,
+        base_idx + 2,
+        base_idx,
+        base_idx + 2,
+        base_idx + 3,
+    ]);
+}
+
 pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
     let size = 0.02;
     let thickness = 0.001;

@@ -59,6 +59,18 @@ pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
     0.0, 0.0, 0.5, 1.0,
 );
 
+/// Convert cgmath Vector4 frustum planes to [[f32; 4]; 6] for GPU culling shader
+fn frustum_planes_to_array(planes: &[cgmath::Vector4<f32>; 6]) -> [[f32; 4]; 6] {
+    [
+        [planes[0].x, planes[0].y, planes[0].z, planes[0].w],
+        [planes[1].x, planes[1].y, planes[1].z, planes[1].w],
+        [planes[2].x, planes[2].y, planes[2].z, planes[2].w],
+        [planes[3].x, planes[3].y, planes[3].z, planes[3].w],
+        [planes[4].x, planes[4].y, planes[4].z, planes[4].w],
+        [planes[5].x, planes[5].y, planes[5].z, planes[5].w],
+    ]
+}
+
 struct State {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -2245,100 +2257,133 @@ impl State {
     }
 
     fn update_subchunk_mesh(&mut self, result: render3d::mesh_loader::MeshResult) {
-        let mut world = self.world.write();
-        if let Some(chunk) = world.chunks.get_mut(&(result.cx, result.cz)) {
-            let subchunk = &mut chunk.subchunks[result.sy as usize];
+        // Capture data needed for IndirectManager before acquiring world lock
+        let terrain_vertices = result.terrain.0.clone();
+        let terrain_indices = result.terrain.1.clone();
+        let cx = result.cx;
+        let cz = result.cz;
+        let sy = result.sy;
 
-            subchunk.num_indices = result.terrain.1.len() as u32;
-            if !result.terrain.0.is_empty() {
-                let vertex_data: &[u8] = bytemuck::cast_slice(&result.terrain.0);
-                let index_data: &[u8] = bytemuck::cast_slice(&result.terrain.1);
+        let aabb_copy;
 
-                let needs_new_vertex_buffer = subchunk
-                    .vertex_buffer
-                    .as_ref()
-                    .map(|b| b.size() < vertex_data.len() as u64)
-                    .unwrap_or(true);
-                let needs_new_index_buffer = subchunk
-                    .index_buffer
-                    .as_ref()
-                    .map(|b| b.size() < index_data.len() as u64)
-                    .unwrap_or(true);
+        {
+            let mut world = self.world.write();
+            if let Some(chunk) = world.chunks.get_mut(&(result.cx, result.cz)) {
+                let subchunk = &mut chunk.subchunks[result.sy as usize];
 
-                if needs_new_vertex_buffer {
-                    subchunk.vertex_buffer =
-                        Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("Subchunk Vertex Buffer"),
-                            size: vertex_data.len() as u64,
-                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                            mapped_at_creation: false,
-                        }));
+                // Copy AABB for IndirectManager (before we release the lock)
+                aabb_copy = subchunk.aabb;
+
+                subchunk.num_indices = result.terrain.1.len() as u32;
+                if !result.terrain.0.is_empty() {
+                    let vertex_data: &[u8] = bytemuck::cast_slice(&result.terrain.0);
+                    let index_data: &[u8] = bytemuck::cast_slice(&result.terrain.1);
+
+                    let needs_new_vertex_buffer = subchunk
+                        .vertex_buffer
+                        .as_ref()
+                        .map(|b| b.size() < vertex_data.len() as u64)
+                        .unwrap_or(true);
+                    let needs_new_index_buffer = subchunk
+                        .index_buffer
+                        .as_ref()
+                        .map(|b| b.size() < index_data.len() as u64)
+                        .unwrap_or(true);
+
+                    if needs_new_vertex_buffer {
+                        subchunk.vertex_buffer =
+                            Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                                label: Some("Subchunk Vertex Buffer"),
+                                size: vertex_data.len() as u64,
+                                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                                mapped_at_creation: false,
+                            }));
+                    }
+                    if needs_new_index_buffer {
+                        subchunk.index_buffer =
+                            Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                                label: Some("Subchunk Index Buffer"),
+                                size: index_data.len() as u64,
+                                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                                mapped_at_creation: false,
+                            }));
+                    }
+
+                    self.queue.write_buffer(
+                        subchunk.vertex_buffer.as_ref().unwrap(),
+                        0,
+                        vertex_data,
+                    );
+                    self.queue
+                        .write_buffer(subchunk.index_buffer.as_ref().unwrap(), 0, index_data);
                 }
-                if needs_new_index_buffer {
-                    subchunk.index_buffer =
-                        Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("Subchunk Index Buffer"),
-                            size: index_data.len() as u64,
-                            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-                            mapped_at_creation: false,
-                        }));
+
+                subchunk.num_water_indices = result.water.1.len() as u32;
+                if !result.water.0.is_empty() {
+                    let vertex_data: &[u8] = bytemuck::cast_slice(&result.water.0);
+                    let index_data: &[u8] = bytemuck::cast_slice(&result.water.1);
+
+                    let needs_new_vertex_buffer = subchunk
+                        .water_vertex_buffer
+                        .as_ref()
+                        .map(|b| b.size() < vertex_data.len() as u64)
+                        .unwrap_or(true);
+                    let needs_new_index_buffer = subchunk
+                        .water_index_buffer
+                        .as_ref()
+                        .map(|b| b.size() < index_data.len() as u64)
+                        .unwrap_or(true);
+
+                    if needs_new_vertex_buffer {
+                        subchunk.water_vertex_buffer =
+                            Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                                label: Some("Subchunk Water Vertex Buffer"),
+                                size: vertex_data.len() as u64,
+                                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                                mapped_at_creation: false,
+                            }));
+                    }
+                    if needs_new_index_buffer {
+                        subchunk.water_index_buffer =
+                            Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                                label: Some("Subchunk Water Index Buffer"),
+                                size: index_data.len() as u64,
+                                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                                mapped_at_creation: false,
+                            }));
+                    }
+
+                    self.queue.write_buffer(
+                        subchunk.water_vertex_buffer.as_ref().unwrap(),
+                        0,
+                        vertex_data,
+                    );
+                    self.queue.write_buffer(
+                        subchunk.water_index_buffer.as_ref().unwrap(),
+                        0,
+                        index_data,
+                    );
                 }
 
-                self.queue
-                    .write_buffer(subchunk.vertex_buffer.as_ref().unwrap(), 0, vertex_data);
-                self.queue
-                    .write_buffer(subchunk.index_buffer.as_ref().unwrap(), 0, index_data);
+                subchunk.mesh_dirty = false;
+            } else {
+                return; // Chunk not found, nothing to do
             }
+        } // world lock released here
 
-            subchunk.num_water_indices = result.water.1.len() as u32;
-            if !result.water.0.is_empty() {
-                let vertex_data: &[u8] = bytemuck::cast_slice(&result.water.0);
-                let index_data: &[u8] = bytemuck::cast_slice(&result.water.1);
-
-                let needs_new_vertex_buffer = subchunk
-                    .water_vertex_buffer
-                    .as_ref()
-                    .map(|b| b.size() < vertex_data.len() as u64)
-                    .unwrap_or(true);
-                let needs_new_index_buffer = subchunk
-                    .water_index_buffer
-                    .as_ref()
-                    .map(|b| b.size() < index_data.len() as u64)
-                    .unwrap_or(true);
-
-                if needs_new_vertex_buffer {
-                    subchunk.water_vertex_buffer =
-                        Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("Subchunk Water Vertex Buffer"),
-                            size: vertex_data.len() as u64,
-                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                            mapped_at_creation: false,
-                        }));
-                }
-                if needs_new_index_buffer {
-                    subchunk.water_index_buffer =
-                        Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("Subchunk Water Index Buffer"),
-                            size: index_data.len() as u64,
-                            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-                            mapped_at_creation: false,
-                        }));
-                }
-
-                self.queue.write_buffer(
-                    subchunk.water_vertex_buffer.as_ref().unwrap(),
-                    0,
-                    vertex_data,
-                );
-                self.queue.write_buffer(
-                    subchunk.water_index_buffer.as_ref().unwrap(),
-                    0,
-                    index_data,
-                );
-            }
-
-            subchunk.mesh_dirty = false;
-        }
+        // IndirectManager upload disabled for now - buffer size limits make it impractical
+        // without greedy meshing. The 256MB wgpu limit cannot hold all terrain geometry.
+        // TODO: Enable after implementing greedy meshing to reduce geometry by 50-90%
+        // if !terrain_vertices.is_empty() && !terrain_indices.is_empty() {
+        //     self.indirect_manager.upload_subchunk(
+        //         &self.device,
+        //         &self.queue,
+        //         SubchunkKey { chunk_x: cx, chunk_z: cz, subchunk_y: sy },
+        //         &terrain_vertices,
+        //         &terrain_indices,
+        //         &aabb_copy,
+        //     );
+        // }
     }
 
     fn update(&mut self) {
@@ -2766,13 +2811,18 @@ impl State {
         // Sort terrain front-to-back for early-z rejection (reduces overdraw)
         visible_terrain
             .sort_unstable_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
-
         // Sort water back-to-front for correct alpha blending
         visible_water
             .sort_unstable_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
 
         self.chunks_rendered = chunks_rendered;
         self.subchunks_rendered = subchunks_rendered;
+
+        // Dispatch GPU frustum culling for indirect drawing
+        // This populates visible_draw_commands buffer with draw calls for visible subchunks
+        let frustum_planes_array = frustum_planes_to_array(&frustum_planes);
+        self.indirect_manager
+            .dispatch_culling(&mut encoder, &self.queue, &frustum_planes_array);
 
         // SSR Pass 1: Render Sky to SSR textures
         {
@@ -2843,7 +2893,6 @@ impl State {
                 ssr_terrain_pass.draw_indexed(0..*num_indices, 0, 0..1);
             }
         }
-
         // Main Scene Pass: Render Sky, Terrain, Water, and Objects
         // When SSAO is enabled, resolve to scene_color_view for post-processing
         // Otherwise resolve directly to swapchain
@@ -2888,7 +2937,7 @@ impl State {
                 .set_index_buffer(self.sun_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..6, 0, 0..1);
 
-            // 2. Draw Terrain
+            // 2. Draw Terrain (per-subchunk for now - indirect drawing needs greedy meshing first)
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             for (vb, ib, num_indices, _) in &visible_terrain {
@@ -3474,6 +3523,19 @@ impl State {
         if button == MouseButton::Right && pressed {
             let target = self.camera.raycast(&*self.world.read(), 5.0);
             if let Some((_, _, _, px, py, pz)) = target {
+                // Check if the new block would intersect with the local player
+                if self.camera.intersects_block(px, py, pz) {
+                    return;
+                }
+
+                // Check if it would intersect with any remote players
+                for player in self.remote_players.values() {
+                    let player_pos = cgmath::Point3::new(player.x, player.y, player.z);
+                    if render3d::camera::check_intersection(player_pos, px, py, pz) {
+                        return;
+                    }
+                }
+
                 self.world
                     .write()
                     .set_block_player(px, py, pz, BlockType::Stone);

@@ -19,7 +19,7 @@ struct Uniforms {
 struct SSAOParams {
     proj: mat4x4<f32>,
     inv_proj: mat4x4<f32>,
-    samples: array<vec4<f32>, 64>,
+    samples: array<vec4<f32>, 32>,
     noise_scale: vec2<f32>,
     radius: f32,
     bias: f32,
