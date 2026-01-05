@@ -42,6 +42,8 @@ struct VertexInput {
     @location(2) color: vec3<f32>,
     @location(3) uv: vec2<f32>,
     @location(4) tex_index: f32,
+    @location(5) roughness: f32,
+    @location(6) metallic: f32,
 };
 
 struct VertexOutput {
@@ -51,6 +53,8 @@ struct VertexOutput {
     @location(2) color: vec3<f32>,
     @location(3) uv: vec2<f32>,
     @location(4) tex_index: f32,
+    @location(5) roughness: f32,
+    @location(6) metallic: f32,
 };
 
 @vertex
@@ -62,6 +66,8 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     out.color = model.color;
     out.uv = model.uv;
     out.tex_index = model.tex_index;
+    out.roughness = model.roughness;
+    out.metallic = model.metallic;
     return out;
 }
 
@@ -164,6 +170,44 @@ fn vogel_disk_sample(sample_index: i32, sample_count: i32, phi: f32) -> vec2<f32
 fn world_space_noise(world_pos: vec3<f32>) -> f32 {
     let p = world_pos * 0.5; // Scale down for smoother distribution
     return fract(sin(dot(floor(p.xz), vec2<f32>(12.9898, 78.233))) * 43758.5453);
+}
+
+// --- PBR FUNCTIONS (Cook-Torrance BRDF) ---
+
+fn NDF_GGX(N: vec3<f32>, H: vec3<f32>, roughness: f32) -> f32 {
+    let a = roughness * roughness;
+    let a2 = a * a;
+    let NdotH = max(dot(N, H), 0.0);
+    let NdotH2 = NdotH * NdotH;
+
+    let num = a2;
+    var denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+
+    return num / max(denom, 0.001);
+}
+
+fn GeometrySchlickGGX(NdotV: f32, roughness: f32) -> f32 {
+    let r = (roughness + 1.0);
+    let k = (r * r) / 8.0;
+
+    let num = NdotV;
+    let denom = NdotV * (1.0 - k) + k;
+
+    return num / denom;
+}
+
+fn GeometrySmith(N: vec3<f32>, V: vec3<f32>, L: vec3<f32>, roughness: f32) -> f32 {
+    let NdotV = max(dot(N, V), 0.0);
+    let NdotL = max(dot(N, L), 0.0);
+    let ggx2 = GeometrySchlickGGX(NdotV, roughness);
+    let ggx1 = GeometrySchlickGGX(NdotL, roughness);
+
+    return ggx1 * ggx2;
+}
+
+fn fresnelSchlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
 /// Percentage Closer Filtering (PCF) shadow calculation.
@@ -299,9 +343,42 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let effective_face_shade = mix(1.0, face_shade, day_factor + 0.3);
 
-    let lighting = (ambient + sun_diffuse + fill_diffuse) * effective_face_shade;
+    let lighting_simple = (ambient + sun_diffuse + fill_diffuse) * effective_face_shade;
 
-    var lit_color = tex_color * lighting;
+    // --- PBR LIGHTING ---
+
+    let V = -view_dir;
+    let L = sun_dir;
+    let H = normalize(V + L);
+    let N = normalize(in.normal);
+    
+    // Base reflectivity for non-metals
+    var F0 = vec3<f32>(0.04);
+    F0 = mix(F0, tex_color, in.metallic);
+    
+    // Reflectance equation
+    let NDF = NDF_GGX(N, H, in.roughness);
+    let G = GeometrySmith(N, V, L, in.roughness);
+    let F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+
+    let kS = F;
+    var kD = vec3<f32>(1.0) - kS;
+    kD *= 1.0 - in.metallic;
+
+    let numerator = NDF * G * F;
+    let denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.001;
+    let specular = numerator / denominator;
+
+    let NdotL = max(dot(N, L), 0.0);
+    
+    // Solar contribution
+    let sun_color = vec3<f32>(1.0, 0.98, 0.9);
+    let pbr_sun = (kD * tex_color / PI + specular) * sun_color * NdotL * shadow * day_factor;
+    
+    // Ambient contribution (simplified IBL)
+    let ambient_pbr = kD * tex_color * ambient * effective_face_shade;
+
+    var lit_color = pbr_sun + ambient_pbr;
     
     // Apply sunset tint to lit surfaces
     if sunset_factor > 0.3 && sun_dir.y > -0.2 {

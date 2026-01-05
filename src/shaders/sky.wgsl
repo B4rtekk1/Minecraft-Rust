@@ -42,6 +42,8 @@ struct VertexInput {
     @location(2) color: vec3<f32>,
     @location(3) uv: vec2<f32>,
     @location(4) tex_index: f32,
+    @location(5) roughness: f32,
+    @location(6) metallic: f32,
 };
 
 struct VertexOutput {
@@ -81,7 +83,10 @@ fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
     let height_factor = clamp(view_altitude * 0.5 + 0.5, 0.0, 1.0);
     
     // Horizontal projection for azimuth alignment
-    let view_horiz = normalize(vec3<f32>(view_dir.x, 0.0, view_dir.z));
+    let view_horiz_raw = vec3<f32>(view_dir.x, 0.0, view_dir.z);
+    let view_horiz_len = length(view_horiz_raw);
+    let view_horiz = view_horiz_raw / max(view_horiz_len, 0.0001);
+
     let sun_horiz = normalize(vec3<f32>(sun_dir.x, 0.0, sun_dir.z));
     let cos_azimuth = dot(view_horiz, sun_horiz);
     
@@ -113,16 +118,14 @@ fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
         
         // Horizon enhancement
         let horizon_strength = pow(1.0 - abs(view_altitude), 0.7);
-        let horizon_boost = horizon_strength * smoothstep(0.0, 0.15, length(view_horiz));
+        let horizon_boost = horizon_strength * smoothstep(0.0, 0.15, view_horiz_len);
 
         var sunset_color = vec3<f32>(0.0);
         sunset_color += vec3<f32>(1.0, 0.85, 0.4) * glow_core * 1.5;           // Bright core
         sunset_color += vec3<f32>(1.0, 0.45, 0.1) * glow_near * 1.2 * horizon_boost;
         sunset_color += vec3<f32>(0.9, 0.25, 0.1) * glow_wide * 0.8 * horizon_boost;
         
-        // Soft pink scattering opposite the sun
-        let opposite_glow = pow(max(0.0, -cos_azimuth), 3.0) * 0.3;
-        sunset_color += vec3<f32>(0.95, 0.55, 0.7) * opposite_glow * horizon_strength;
+        // (Removed opposite_glow to prevent "double sun" effect)
 
         sky = mix(sky, sky + sunset_color, sunset_intensity);
     }

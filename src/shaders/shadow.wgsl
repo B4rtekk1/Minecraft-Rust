@@ -37,6 +37,8 @@ struct VertexInput {
     @location(2) color: vec3<f32>,
     @location(3) uv: vec2<f32>,
     @location(4) tex_index: f32,
+    @location(5) roughness: f32,
+    @location(6) metallic: f32,
 };
 
 /// Shadow Vertex Shader

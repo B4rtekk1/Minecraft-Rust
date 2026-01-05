@@ -161,4 +161,24 @@ impl BlockType {
             _ => self.tex_top(),
         }
     }
+
+    pub fn roughness(&self) -> f32 {
+        match self {
+            BlockType::Stone | BlockType::Bedrock | BlockType::Gravel | BlockType::Clay => 0.7,
+            BlockType::Sand => 0.8,
+            BlockType::Grass | BlockType::Dirt | BlockType::DeadBush => 1.0,
+            BlockType::Leaves => 0.5,
+            BlockType::Snow => 0.8,
+            BlockType::Ice | BlockType::Water => 0.1,
+            BlockType::Wood | BlockType::Cactus => 0.6,
+            BlockType::Air => 1.0,
+        }
+    }
+
+    pub fn metallic(&self) -> f32 {
+        match self {
+            BlockType::Ice | BlockType::Water => 0.05,
+            _ => 0.0,
+        }
+    }
 }

@@ -10,6 +10,8 @@ pub fn add_quad(
     normal: [f32; 3],
     color: [f32; 3],
     tex_index: f32,
+    roughness: f32,
+    metallic: f32,
 ) {
     let base_idx = vertices.len() as u32;
     vertices.push(Vertex {
@@ -18,6 +20,8 @@ pub fn add_quad(
         color,
         uv: [0.0, 1.0],
         tex_index,
+        roughness,
+        metallic,
     });
     vertices.push(Vertex {
         position: v1,
@@ -25,6 +29,8 @@ pub fn add_quad(
         color,
         uv: [1.0, 1.0],
         tex_index,
+        roughness,
+        metallic,
     });
     vertices.push(Vertex {
         position: v2,
@@ -32,6 +38,8 @@ pub fn add_quad(
         color,
         uv: [1.0, 0.0],
         tex_index,
+        roughness,
+        metallic,
     });
     vertices.push(Vertex {
         position: v3,
@@ -39,6 +47,8 @@ pub fn add_quad(
         color,
         uv: [0.0, 0.0],
         tex_index,
+        roughness,
+        metallic,
     });
     indices.extend_from_slice(&[
         base_idx,
@@ -72,6 +82,8 @@ pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
         color,
         uv: [0.0, 0.0],
         tex_index: 0.0,
+        roughness: 1.0,
+        metallic: 0.0,
     });
     vertices.push(Vertex {
         position: [size_x, -thickness, 0.0],
@@ -79,6 +91,8 @@ pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
         color,
         uv: [1.0, 0.0],
         tex_index: 0.0,
+        roughness: 1.0,
+        metallic: 0.0,
     });
     vertices.push(Vertex {
         position: [size_x, thickness, 0.0],
@@ -86,6 +100,8 @@ pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
         color,
         uv: [1.0, 1.0],
         tex_index: 0.0,
+        roughness: 1.0,
+        metallic: 0.0,
     });
     vertices.push(Vertex {
         position: [-size_x, thickness, 0.0],
@@ -93,6 +109,8 @@ pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
         color,
         uv: [0.0, 1.0],
         tex_index: 0.0,
+        roughness: 1.0,
+        metallic: 0.0,
     });
     indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
     // Vertical bar (use thickness_x for correct aspect ratio)
@@ -102,6 +120,8 @@ pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
         color,
         uv: [0.0, 0.0],
         tex_index: 0.0,
+        roughness: 1.0,
+        metallic: 0.0,
     });
     vertices.push(Vertex {
         position: [thickness_x, -size, 0.0],
@@ -109,6 +129,8 @@ pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
         color,
         uv: [1.0, 0.0],
         tex_index: 0.0,
+        roughness: 1.0,
+        metallic: 0.0,
     });
     vertices.push(Vertex {
         position: [thickness_x, size, 0.0],
@@ -116,6 +138,8 @@ pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
         color,
         uv: [1.0, 1.0],
         tex_index: 0.0,
+        roughness: 1.0,
+        metallic: 0.0,
     });
     vertices.push(Vertex {
         position: [-thickness_x, size, 0.0],
@@ -123,6 +147,8 @@ pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
         color,
         uv: [0.0, 1.0],
         tex_index: 0.0,
+        roughness: 1.0,
+        metallic: 0.0,
     });
     indices.extend_from_slice(&[4, 5, 6, 4, 6, 7]);
 
@@ -199,6 +225,8 @@ pub fn build_player_model(x: f32, y: f32, z: f32, yaw: f32) -> (Vec<Vertex>, Vec
                     color,
                     uv: [0.0, 0.0],
                     tex_index: -1.0, // No texture, just use color
+                    roughness: 1.0,
+                    metallic: 0.0,
                 });
             }
             indices.extend_from_slice(&[

@@ -32,6 +32,8 @@ struct VertexInput {
     @location(2) color: vec3<f32>,
     @location(3) uv: vec2<f32>,
     @location(4) tex_index: f32,
+    @location(5) roughness: f32,
+    @location(6) metallic: f32,
 };
 
 struct VertexOutput {
@@ -48,7 +50,7 @@ struct VertexOutput {
 @vertex
 fn vs_sun(model: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    
+
     let sun_dir = normalize(uniforms.sun_position);
     let sun_world_pos = uniforms.camera_pos + sun_dir * 400.0;
     
@@ -57,17 +59,17 @@ fn vs_sun(model: VertexInput) -> VertexOutput {
     let world_up = vec3<f32>(0.0, 1.0, 0.0);
     let right = normalize(cross(world_up, forward));
     let up = cross(forward, right);
-    
+
     let size = 30.0;
     
     // Offset quad corners based on basis vectors
     let offset = right * model.position.x * size + up * model.position.y * size;
     let world_pos = sun_world_pos + offset;
-    
+
     out.clip_position = uniforms.view_proj * vec4<f32>(world_pos, 1.0);
     out.uv = model.uv;
     out.color = model.color;
-    
+
     return out;
 }
 
@@ -78,10 +80,10 @@ fn vs_sun(model: VertexInput) -> VertexOutput {
 fn fs_sun(in: VertexOutput) -> @location(0) vec4<f32> {
     let center = vec2<f32>(0.5, 0.5);
     let dist = length(in.uv - center);
-    
+
     let core_radius = 0.2;
     let glow_radius = 0.5;
-    
+
     if dist < core_radius {
         // Bright solar core
         let intensity = 1.0 - (dist / core_radius) * 0.2;

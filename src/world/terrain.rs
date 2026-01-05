@@ -1225,6 +1225,8 @@ impl World {
                                     [-1.0, 0.0, 0.0],
                                     color,
                                     tex_index as f32,
+                                    block.roughness(),
+                                    block.metallic(),
                                 ),
                                 1 => add_quad(
                                     target_verts,
@@ -1236,6 +1238,8 @@ impl World {
                                     [1.0, 0.0, 0.0],
                                     color,
                                     tex_index as f32,
+                                    block.roughness(),
+                                    block.metallic(),
                                 ),
                                 2 => add_quad(
                                     target_verts,
@@ -1247,6 +1251,8 @@ impl World {
                                     [0.0, -1.0, 0.0],
                                     color,
                                     tex_index as f32,
+                                    block.roughness(),
+                                    block.metallic(),
                                 ),
                                 3 => add_quad(
                                     target_verts,
@@ -1258,6 +1264,8 @@ impl World {
                                     [0.0, 1.0, 0.0],
                                     color,
                                     tex_index as f32,
+                                    block.roughness(),
+                                    block.metallic(),
                                 ),
                                 4 => add_quad(
                                     target_verts,
@@ -1269,6 +1277,8 @@ impl World {
                                     [0.0, 0.0, -1.0],
                                     color,
                                     tex_index as f32,
+                                    block.roughness(),
+                                    block.metallic(),
                                 ),
                                 5 => add_quad(
                                     target_verts,
@@ -1280,6 +1290,8 @@ impl World {
                                     [0.0, 0.0, 1.0],
                                     color,
                                     tex_index as f32,
+                                    block.roughness(),
+                                    block.metallic(),
                                 ),
                                 _ => {}
                             }

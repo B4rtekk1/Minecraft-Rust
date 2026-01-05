@@ -83,6 +83,8 @@ pub fn update_coords_ui(
                 color,
                 uv: [0.0, 0.0],
                 tex_index: 0.0,
+                roughness: 1.0,
+                metallic: 0.0,
             });
             verts.push(Vertex {
                 position: [x2 - nx, y2 - ny, 0.0],
@@ -90,6 +92,8 @@ pub fn update_coords_ui(
                 color,
                 uv: [1.0, 0.0],
                 tex_index: 0.0,
+                roughness: 1.0,
+                metallic: 0.0,
             });
             verts.push(Vertex {
                 position: [x2 + nx, y2 + ny, 0.0],
@@ -97,6 +101,8 @@ pub fn update_coords_ui(
                 color,
                 uv: [1.0, 1.0],
                 tex_index: 0.0,
+                roughness: 1.0,
+                metallic: 0.0,
             });
             verts.push(Vertex {
                 position: [x1 + nx, y1 + ny, 0.0],
@@ -104,6 +110,8 @@ pub fn update_coords_ui(
                 color,
                 uv: [0.0, 1.0],
                 tex_index: 0.0,
+                roughness: 1.0,
+                metallic: 0.0,
             });
             inds.extend_from_slice(&[
                 base_idx,
