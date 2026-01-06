@@ -2651,36 +2651,20 @@ impl State {
             shadow_pass.set_pipeline(&self.shadow_pipeline);
             shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
 
-            let shadow_dist = RENDER_DISTANCE;
-            let world = self.world.read();
-            for cx in (player_cx - shadow_dist)..=(player_cx + shadow_dist) {
-                for cz in (player_cz - shadow_dist)..=(player_cz + shadow_dist) {
-                    if let Some(chunk) = world.chunks.get(&(cx, cz)) {
-                        for (subchunk_idx, subchunk) in chunk.subchunks.iter().enumerate() {
-                            if subchunk.is_empty || subchunk.num_indices == 0 {
-                                continue;
-                            }
-                            // Shadow frustum culling - skip subchunks outside shadow view
-                            if !subchunk.aabb.is_visible(&shadow_frustum) {
-                                continue;
-                            }
-                            // Occlusion culling
-                            if world.is_subchunk_occluded(cx, cz, subchunk_idx as i32) {
-                                continue;
-                            }
-
-                            if let (Some(vb), Some(ib)) =
-                                (&subchunk.vertex_buffer, &subchunk.index_buffer)
-                            {
-                                shadow_pass.set_vertex_buffer(0, vb.slice(..));
-                                shadow_pass
-                                    .set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                                shadow_pass.draw_indexed(0..subchunk.num_indices, 0, 0..1);
-                            }
-                        }
-                    }
-                }
-            }
+            // Use GPU Indirect Drawing for shadow pass (same unified buffers as main pass)
+            // Note: Uses camera frustum culling results, not shadow frustum. This is a
+            // performance trade-off: slightly more shadows rendered than strictly necessary,
+            // but eliminates expensive per-subchunk CPU iteration.
+            shadow_pass.set_vertex_buffer(0, self.indirect_manager.vertex_buffer().slice(..));
+            shadow_pass.set_index_buffer(
+                self.indirect_manager.index_buffer().slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            shadow_pass.multi_draw_indexed_indirect(
+                self.indirect_manager.draw_commands(),
+                0,
+                self.indirect_manager.active_count(),
+            );
         }
 
         // Optimization: Pre-allocate since we limit to max_meshes_per_frame
@@ -2743,10 +2727,7 @@ impl State {
             + night_sky.2 * night_factor)
             .min(1.0);
 
-        // Collect visible subchunks first to avoid borrowing issues
-        // Tuple: (vertex_buffer, index_buffer, num_indices, distance_squared)
-        let mut visible_terrain: Vec<(wgpu::Buffer, wgpu::Buffer, u32, f32)> = Vec::new();
-        // Water doesn't need sorting (transparent, rendered back-to-front naturally with alpha blend)
+        // Collect visible water (still needs CPU culling since it doesn't use indirect drawing)
         let mut visible_water: Vec<(wgpu::Buffer, wgpu::Buffer, u32, f32)> = Vec::new();
 
         let cam_pos = cgmath::Vector3::new(
@@ -2760,45 +2741,37 @@ impl State {
             for cx in (player_cx - RENDER_DISTANCE)..=(player_cx + RENDER_DISTANCE) {
                 for cz in (player_cz - RENDER_DISTANCE)..=(player_cz + RENDER_DISTANCE) {
                     if let Some(chunk) = world.chunks.get(&(cx, cz)) {
-                        let mut chunk_visible = false;
+                        let mut chunk_has_visible = false;
                         for (subchunk_idx, subchunk) in chunk.subchunks.iter().enumerate() {
                             if subchunk.is_empty {
                                 continue;
                             }
-                            if !subchunk.aabb.is_visible(&frustum_planes) {
-                                continue;
-                            }
-                            // Occlusion culling
-                            if world.is_subchunk_occluded(cx, cz, subchunk_idx as i32) {
-                                continue;
-                            }
 
-                            // Calculate subchunk center for distance sorting
-                            let center_x = (subchunk.aabb.min.x + subchunk.aabb.max.x) * 0.5;
-                            let center_y = (subchunk.aabb.min.y + subchunk.aabb.max.y) * 0.5;
-                            let center_z = (subchunk.aabb.min.z + subchunk.aabb.max.z) * 0.5;
-                            let dx = center_x - cam_pos.x;
-                            let dy = center_y - cam_pos.y;
-                            let dz = center_z - cam_pos.z;
-                            let dist_sq = dx * dx + dy * dy + dz * dz;
-
-                            // Collect terrain geometry
+                            // Count rendered subchunks (GPU culling handles actual visibility for terrain)
                             if subchunk.num_indices > 0 {
-                                if let (Some(vb), Some(ib)) =
-                                    (&subchunk.vertex_buffer, &subchunk.index_buffer)
-                                {
-                                    visible_terrain.push((
-                                        vb.clone(),
-                                        ib.clone(),
-                                        subchunk.num_indices,
-                                        dist_sq,
-                                    ));
-                                    subchunks_rendered += 1;
-                                    chunk_visible = true;
-                                }
+                                subchunks_rendered += 1;
+                                chunk_has_visible = true;
                             }
-                            // Collect water geometry (back-to-front for proper alpha blending)
+
+                            // Water still needs CPU culling since it doesn't use indirect drawing
                             if subchunk.num_water_indices > 0 {
+                                // Apply visibility culling only for water
+                                if !subchunk.aabb.is_visible(&frustum_planes) {
+                                    continue;
+                                }
+                                if world.is_subchunk_occluded(cx, cz, subchunk_idx as i32) {
+                                    continue;
+                                }
+
+                                // Calculate subchunk center for distance sorting
+                                let center_x = (subchunk.aabb.min.x + subchunk.aabb.max.x) * 0.5;
+                                let center_y = (subchunk.aabb.min.y + subchunk.aabb.max.y) * 0.5;
+                                let center_z = (subchunk.aabb.min.z + subchunk.aabb.max.z) * 0.5;
+                                let dx = center_x - cam_pos.x;
+                                let dy = center_y - cam_pos.y;
+                                let dz = center_z - cam_pos.z;
+                                let dist_sq = dx * dx + dy * dy + dz * dz;
+
                                 if let (Some(vb), Some(ib)) =
                                     (&subchunk.water_vertex_buffer, &subchunk.water_index_buffer)
                                 {
@@ -2811,7 +2784,7 @@ impl State {
                                 }
                             }
                         }
-                        if chunk_visible {
+                        if chunk_has_visible {
                             chunks_rendered += 1;
                         }
                     }
@@ -2819,9 +2792,6 @@ impl State {
             }
         }
 
-        // Sort terrain front-to-back for early-z rejection (reduces overdraw)
-        visible_terrain
-            .sort_unstable_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
         // Sort water back-to-front for correct alpha blending
         visible_water
             .sort_unstable_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));

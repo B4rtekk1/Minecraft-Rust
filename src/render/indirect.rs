@@ -79,6 +79,13 @@ struct SubchunkAlloc {
     slot_index: usize,
 }
 
+/// A free block in the vertex or index buffer for memory reclamation
+#[derive(Debug, Clone)]
+struct FreeBlock {
+    offset: u32,
+    count: u32,
+}
+
 /// Manages GPU indirect drawing resources
 pub struct IndirectManager {
     // Unified geometry buffers
@@ -104,6 +111,10 @@ pub struct IndirectManager {
     next_index_offset: u32,
     active_subchunk_count: u32,
     free_slots: Vec<usize>,
+
+    // Free-lists for memory reclamation
+    free_vertex_blocks: Vec<FreeBlock>,
+    free_index_blocks: Vec<FreeBlock>,
 
     // Compute pipeline for culling
     cull_pipeline: wgpu::ComputePipeline,
@@ -266,6 +277,8 @@ impl IndirectManager {
             next_index_offset: 0,
             active_subchunk_count: 0,
             free_slots: (0..MAX_SUBCHUNKS).rev().collect(),
+            free_vertex_blocks: Vec::new(),
+            free_index_blocks: Vec::new(),
             cull_pipeline,
             cull_bind_group_layout,
             cull_bind_group: None,
@@ -310,11 +323,22 @@ impl IndirectManager {
         indices: &[u32],
         aabb: &AABB,
     ) -> bool {
-        // Remove old allocation if exists
+        // Remove old allocation if exists and add to free-lists
         if let Some(old_alloc) = self.allocations.remove(&key) {
-            // For now, we don't reclaim space (simple append-only allocator)
-            // In production, you'd want a free-list or defragmentation
-            _ = old_alloc;
+            // Reclaim space by adding to free-lists
+            if old_alloc.vertex_count > 0 {
+                self.free_vertex_blocks.push(FreeBlock {
+                    offset: old_alloc.vertex_offset,
+                    count: old_alloc.vertex_count,
+                });
+            }
+            if old_alloc.index_count > 0 {
+                self.free_index_blocks.push(FreeBlock {
+                    offset: old_alloc.index_offset,
+                    count: old_alloc.index_count,
+                });
+            }
+            self.free_slots.push(old_alloc.slot_index);
         }
 
         if vertices.is_empty() || indices.is_empty() {
@@ -324,13 +348,57 @@ impl IndirectManager {
         let vertex_count = vertices.len() as u32;
         let index_count = indices.len() as u32;
 
-        // For vertex/index buffers, if we run out of space, we reset (simple for now)
-        if self.next_vertex_offset + vertex_count > MAX_VERTICES as u32
-            || self.next_index_offset + index_count > MAX_INDICES as u32
-        {
-            println!("Unified buffer full, clearing indirect draw cache...");
-            self.clear_gpu_data(queue);
-        }
+        // Try to find suitable free blocks first (best-fit strategy)
+        let vertex_alloc = self.find_free_block(&mut self.free_vertex_blocks.clone(), vertex_count);
+        let index_alloc = self.find_free_block(&mut self.free_index_blocks.clone(), index_count);
+
+        let (vertex_offset, reused_vertex) = match vertex_alloc {
+            Some((idx, block)) => {
+                self.free_vertex_blocks.remove(idx);
+                // If block is larger, put remainder back
+                if block.count > vertex_count {
+                    self.free_vertex_blocks.push(FreeBlock {
+                        offset: block.offset + vertex_count,
+                        count: block.count - vertex_count,
+                    });
+                }
+                (block.offset, true)
+            }
+            None => {
+                // Check if we have space to append
+                if self.next_vertex_offset + vertex_count > MAX_VERTICES as u32 {
+                    println!("Unified vertex buffer full, clearing indirect draw cache...");
+                    self.clear_gpu_data(queue);
+                    (self.next_vertex_offset, false)
+                } else {
+                    (self.next_vertex_offset, false)
+                }
+            }
+        };
+
+        let (index_offset, reused_index) = match index_alloc {
+            Some((idx, block)) => {
+                self.free_index_blocks.remove(idx);
+                // If block is larger, put remainder back
+                if block.count > index_count {
+                    self.free_index_blocks.push(FreeBlock {
+                        offset: block.offset + index_count,
+                        count: block.count - index_count,
+                    });
+                }
+                (block.offset, true)
+            }
+            None => {
+                // Check if we have space to append
+                if self.next_index_offset + index_count > MAX_INDICES as u32 {
+                    println!("Unified index buffer full, clearing indirect draw cache...");
+                    self.clear_gpu_data(queue);
+                    (self.next_index_offset, false)
+                } else {
+                    (self.next_index_offset, false)
+                }
+            }
+        };
 
         let slot_index = match self.free_slots.pop() {
             Some(idx) => idx,
@@ -342,9 +410,9 @@ impl IndirectManager {
 
         // Allocate space
         let alloc = SubchunkAlloc {
-            vertex_offset: self.next_vertex_offset,
+            vertex_offset,
             vertex_count,
-            index_offset: self.next_index_offset,
+            index_offset,
             index_count,
             slot_index,
         };
@@ -383,8 +451,13 @@ impl IndirectManager {
             bytemuck::bytes_of(&subchunk_meta),
         );
 
-        self.next_vertex_offset += vertex_count;
-        self.next_index_offset += index_count;
+        // Only advance offsets if we didn't reuse free blocks
+        if !reused_vertex {
+            self.next_vertex_offset += vertex_count;
+        }
+        if !reused_index {
+            self.next_index_offset += index_count;
+        }
         self.allocations.insert(key, alloc);
         self.active_subchunk_count = self.allocations.len() as u32;
 
@@ -394,7 +467,7 @@ impl IndirectManager {
         true
     }
 
-    /// Remove a subchunk
+    /// Remove a subchunk and reclaim its buffer space
     pub fn remove_subchunk(&mut self, queue: &wgpu::Queue, key: SubchunkKey) {
         if let Some(alloc) = self.allocations.remove(&key) {
             // Disable this slot by zeroing the draw data
@@ -410,8 +483,46 @@ impl IndirectManager {
                 bytemuck::bytes_of(&subchunk_meta),
             );
             self.free_slots.push(alloc.slot_index);
+
+            // Add freed memory to free-lists for reuse
+            if alloc.vertex_count > 0 {
+                self.free_vertex_blocks.push(FreeBlock {
+                    offset: alloc.vertex_offset,
+                    count: alloc.vertex_count,
+                });
+            }
+            if alloc.index_count > 0 {
+                self.free_index_blocks.push(FreeBlock {
+                    offset: alloc.index_offset,
+                    count: alloc.index_count,
+                });
+            }
+
             self.active_subchunk_count = self.allocations.len() as u32;
         }
+    }
+
+    /// Find a free block that can fit the requested count (best-fit strategy)
+    fn find_free_block(
+        &self,
+        blocks: &mut Vec<FreeBlock>,
+        count: u32,
+    ) -> Option<(usize, FreeBlock)> {
+        // Best-fit: find smallest block that fits
+        let mut best_idx = None;
+        let mut best_waste = u32::MAX;
+
+        for (idx, block) in blocks.iter().enumerate() {
+            if block.count >= count {
+                let waste = block.count - count;
+                if waste < best_waste {
+                    best_waste = waste;
+                    best_idx = Some(idx);
+                }
+            }
+        }
+
+        best_idx.map(|idx| (idx, blocks[idx].clone()))
     }
 
     /// Reset vertex/index offsets and clear allocations
@@ -436,6 +547,8 @@ impl IndirectManager {
         self.next_vertex_offset = 0;
         self.next_index_offset = 0;
         self.active_subchunk_count = 0;
+        self.free_vertex_blocks.clear();
+        self.free_index_blocks.clear();
     }
 
     /// Dispatch GPU culling compute shader
@@ -506,5 +619,7 @@ impl IndirectManager {
         self.next_index_offset = 0;
         self.active_subchunk_count = 0;
         self.free_slots = (0..MAX_SUBCHUNKS).rev().collect();
+        self.free_vertex_blocks.clear();
+        self.free_index_blocks.clear();
     }
 }
