@@ -6,7 +6,8 @@
 struct Uniforms {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
-    sun_view_proj: mat4x4<f32>,
+    csm_view_proj: array<mat4x4<f32>, 4>,
+    csm_split_distances: vec4<f32>,
     camera_pos: vec3<f32>,
     time: f32,
     sun_position: vec3<f32>,

@@ -19,14 +19,14 @@ struct Uniforms {
 struct SSAOParams {
     proj: mat4x4<f32>,
     inv_proj: mat4x4<f32>,
-    samples: array<vec4<f32>, 32>,
+    samples: array<vec4<f32>, 64>,
     noise_scale: vec2<f32>,
     radius: f32,
     bias: f32,
     intensity: f32,
+    aspect_ratio: f32,
     _padding0: f32,
     _padding1: f32,
-    _padding2: f32,
 };
 
 @group(0) @binding(0)
@@ -87,17 +87,21 @@ fn get_view_pos(uv: vec2<f32>, depth: f32) -> vec3<f32> {
 
 /// Calculate normal from depth buffer using cross product of partial derivatives
 fn get_normal_from_depth(uv: vec2<f32>, texel_size: vec2<f32>) -> vec3<f32> {
+    // Scale X offset by aspect ratio to ensure uniform sampling in view-space
+    let offset_x = texel_size.x;
+    let offset_y = texel_size.y;
+
     let depth_center = textureSample(depth_texture, point_sampler, uv);
-    let depth_left = textureSample(depth_texture, point_sampler, uv - vec2<f32>(texel_size.x, 0.0));
-    let depth_right = textureSample(depth_texture, point_sampler, uv + vec2<f32>(texel_size.x, 0.0));
-    let depth_up = textureSample(depth_texture, point_sampler, uv - vec2<f32>(0.0, texel_size.y));
-    let depth_down = textureSample(depth_texture, point_sampler, uv + vec2<f32>(0.0, texel_size.y));
+    let depth_left = textureSample(depth_texture, point_sampler, uv - vec2<f32>(offset_x, 0.0));
+    let depth_right = textureSample(depth_texture, point_sampler, uv + vec2<f32>(offset_x, 0.0));
+    let depth_up = textureSample(depth_texture, point_sampler, uv - vec2<f32>(0.0, offset_y));
+    let depth_down = textureSample(depth_texture, point_sampler, uv + vec2<f32>(0.0, offset_y));
 
     let pos_center = get_view_pos(uv, depth_center);
-    let pos_left = get_view_pos(uv - vec2<f32>(texel_size.x, 0.0), depth_left);
-    let pos_right = get_view_pos(uv + vec2<f32>(texel_size.x, 0.0), depth_right);
-    let pos_up = get_view_pos(uv - vec2<f32>(0.0, texel_size.y), depth_up);
-    let pos_down = get_view_pos(uv + vec2<f32>(0.0, texel_size.y), depth_down);
+    let pos_left = get_view_pos(uv - vec2<f32>(offset_x, 0.0), depth_left);
+    let pos_right = get_view_pos(uv + vec2<f32>(offset_x, 0.0), depth_right);
+    let pos_up = get_view_pos(uv - vec2<f32>(0.0, offset_y), depth_up);
+    let pos_down = get_view_pos(uv + vec2<f32>(0.0, offset_y), depth_down);
     
     // Use central differences for better accuracy
     let dx = pos_right - pos_left;

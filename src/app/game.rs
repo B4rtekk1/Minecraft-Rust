@@ -42,9 +42,10 @@ struct Args {
 }
 
 use render3d::chunk_loader::ChunkLoader;
+use render3d::render_core::csm::CsmManager;
 use render3d::{
-    ASYNC_WORKER_COUNT, BlockType, CHUNK_SIZE, Camera, DEFAULT_WORLD_FILE, DiggingState,
-    GENERATION_DISTANCE, IndirectManager, InputState, MAX_CHUNKS_PER_FRAME,
+    ASYNC_WORKER_COUNT, BlockType, CHUNK_SIZE, CSM_CASCADE_SPLITS, Camera, DEFAULT_WORLD_FILE,
+    DiggingState, GENERATION_DISTANCE, IndirectManager, InputState, MAX_CHUNKS_PER_FRAME,
     MAX_MESH_BUILDS_PER_FRAME, NUM_SUBCHUNKS, RENDER_DISTANCE, SUBCHUNK_HEIGHT, SavedWorld,
     SubchunkKey, TEXTURE_SIZE, Uniforms, Vertex, World, build_crosshair, build_player_model,
     extract_frustum_planes, generate_texture_atlas, load_texture_atlas_from_file, load_world,
@@ -277,7 +278,8 @@ impl State {
             contents: bytemuck::cast_slice(&[Uniforms {
                 view_proj: Matrix4::from_scale(1.0).into(),
                 inv_view_proj: Matrix4::from_scale(1.0).into(),
-                sun_view_proj: Matrix4::from_scale(1.0).into(),
+                csm_view_proj: [[Matrix4::from_scale(1.0).into(); 1]; 4],
+                csm_split_distances: [16.0, 48.0, 128.0, 300.0],
                 camera_pos: [0.0, 0.0, 0.0],
                 time: 0.0,
                 sun_position: [0.4, -0.2, 0.3],
@@ -295,7 +297,8 @@ impl State {
                 contents: bytemuck::cast_slice(&[Uniforms {
                     view_proj: Matrix4::from_scale(1.0).into(),
                     inv_view_proj: Matrix4::from_scale(1.0).into(),
-                    sun_view_proj: Matrix4::from_scale(1.0).into(),
+                    csm_view_proj: [[Matrix4::from_scale(1.0).into(); 1]; 4],
+                    csm_split_distances: [16.0, 48.0, 128.0, 300.0],
                     camera_pos: [0.0, 0.0, 0.0],
                     time: 0.0,
                     sun_position: [0.4, -0.2, 0.3],
@@ -453,7 +456,7 @@ impl State {
             ..Default::default()
         });
 
-        let shadow_map_size = 2048;
+        let shadow_map_size = 4096;
         let shadow_map_desc = wgpu::TextureDescriptor {
             label: Some("Shadow Map"),
             size: wgpu::Extent3d {
@@ -1440,7 +1443,8 @@ impl State {
             radius: f32,
             bias: f32,
             intensity: f32,
-            _padding: [f32; 3],
+            aspect_ratio: f32,
+            _padding: [f32; 2],
         }
 
         let proj_mat: [[f32; 4]; 4] = cgmath::perspective(
@@ -1460,6 +1464,8 @@ impl State {
         .invert()
         .unwrap_or(Matrix4::identity());
 
+        let aspect_ratio = config.width as f32 / config.height as f32;
+
         let ssao_params = SSAOParams {
             proj: proj_mat,
             inv_proj: inv_proj_mat.into(),
@@ -1468,7 +1474,8 @@ impl State {
             radius: 0.5,
             bias: 0.025,
             intensity: 1.5,
-            _padding: [0.0; 3],
+            aspect_ratio,
+            _padding: [0.0; 2],
         };
 
         let ssao_params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -2539,47 +2546,32 @@ impl State {
         let sun_z = sun_angle.cos();
         let sun_dir = cgmath::Vector3::new(sun_x, sun_y, sun_z).normalize();
 
-        let ortho_size = 300.0;
-        let shadow_map_size = 2048.0_f32;
-        let texels_per_world_unit = shadow_map_size / (ortho_size * 2.0);
-        let world_units_per_texel = 1.0 / texels_per_world_unit;
-        let sun_distance = 200.0;
-        let sun_look_dir = -sun_dir.normalize();
-        let sun_up = cgmath::Vector3::unit_y();
-        let sun_right = sun_look_dir.cross(sun_up).normalize();
-        let sun_up_actual = sun_right.cross(sun_look_dir).normalize();
-
-        let cam_pos = cgmath::Vector3::new(
-            self.camera.position.x,
-            self.camera.position.y,
-            self.camera.position.z,
+        // Use CsmManager to compute cascade matrices with texel snapping for stability
+        let mut csm = CsmManager::new();
+        //let fov_y = std::f32::consts::FRAC_PI_2; // 90 degrees
+        let fov_y = 70f32.to_radians();
+        csm.update(
+            &view_mat, sun_dir, 0.1,   // near
+            300.0, // far (render distance)
+            aspect, fov_y,
         );
 
-        let cam_light_x = cam_pos.dot(sun_right);
-        let cam_light_y = cam_pos.dot(sun_up_actual);
+        // Convert cascade matrices to array format for uniforms
+        let csm_view_proj: [[[[f32; 4]; 4]; 1]; 4] = [
+            [csm.cascades[0].view_proj.into()],
+            [csm.cascades[1].view_proj.into()],
+            [csm.cascades[2].view_proj.into()],
+            [csm.cascades[3].view_proj.into()],
+        ];
+        let csm_split_distances: [f32; 4] = [
+            csm.cascades[0].split_distance,
+            csm.cascades[1].split_distance,
+            csm.cascades[2].split_distance,
+            csm.cascades[3].split_distance,
+        ];
 
-        let snapped_light_x = (cam_light_x / world_units_per_texel).floor() * world_units_per_texel;
-        let snapped_light_y = (cam_light_y / world_units_per_texel).floor() * world_units_per_texel;
-
-        let cam_light_z = cam_pos.dot(sun_look_dir);
-        let snapped_center = sun_right * snapped_light_x
-            + sun_up_actual * snapped_light_y
-            + sun_look_dir * cam_light_z;
-
-        let shadow_center =
-            cgmath::Point3::new(snapped_center.x, snapped_center.y, snapped_center.z);
-
-        let sun_pos = cgmath::Point3::new(
-            shadow_center.x + sun_dir.x * sun_distance,
-            shadow_center.y + sun_dir.y * sun_distance,
-            shadow_center.z + sun_dir.z * sun_distance,
-        );
-
-        let sun_view = Matrix4::look_at_rh(sun_pos, shadow_center, cgmath::Vector3::unit_y());
-        let sun_proj = cgmath::ortho(-ortho_size, ortho_size, -ortho_size, ortho_size, 1.0, 600.0);
-
-        let sun_view_proj = OPENGL_TO_WGPU_MATRIX * sun_proj * sun_view;
-        let sun_view_proj_array: [[f32; 4]; 4] = sun_view_proj.into();
+        // Use first cascade for shadow pass (covers near area with highest detail)
+        let sun_view_proj = csm.cascades[0].view_proj;
 
         let inv_view_proj = view_proj.invert().unwrap_or(Matrix4::identity());
         let inv_view_proj_array: [[f32; 4]; 4] = inv_view_proj.into();
@@ -2605,7 +2597,8 @@ impl State {
             bytemuck::cast_slice(&[Uniforms {
                 view_proj: view_proj_array,
                 inv_view_proj: inv_view_proj_array,
-                sun_view_proj: sun_view_proj_array,
+                csm_view_proj,
+                csm_split_distances,
                 camera_pos: eye_pos.into(),
                 time,
                 sun_position: [sun_x, sun_y, sun_z],

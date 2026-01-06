@@ -7,6 +7,9 @@ pub mod player;
 // Render module with graphics-related code
 pub mod render;
 
+// Render core module with CSM and advanced shadow techniques
+pub mod render_core;
+
 // World module with generation and terrain
 pub mod world;
 

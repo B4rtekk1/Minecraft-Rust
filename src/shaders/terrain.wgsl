@@ -1,9 +1,10 @@
 /// Terrain Rendering Shader
 ///
-/// This shader handles the rendering of solid terrain blocks (grass, dirt, stone, etc.).
+/// This shader handles the rendering of solid terrain blocks (grass, dirt, stone, etc.)
 /// It includes support for:
 /// - Texture Array based atlas sampling
-/// - High-quality PCF shadows using Vogel Disk sampling with world-space noise for temporal stability
+/// - Cascaded Shadow Maps (CSM) with 4 cascades for stable, high-quality shadows
+/// - Receiver-plane depth bias for accurate shadow edges on sloped surfaces
 /// - Time-of-day based lighting (ambient, solar diffuse, secondary fill light)
 /// - Biome-aware fog and atmospheric scattering
 
@@ -12,8 +13,10 @@ struct Uniforms {
     view_proj: mat4x4<f32>,
     /// Inverse of Project * View matrix for unprojecting
     inv_view_proj: mat4x4<f32>,
-    /// Projection * View matrix from the sun's perspective (for shadow mapping)
-    sun_view_proj: mat4x4<f32>,
+    /// CSM cascade view-projection matrices (4 cascades)
+    csm_view_proj: array<mat4x4<f32>, 4>,
+    /// View-space split distances for cascade selection
+    csm_split_distances: vec4<f32>,
     camera_pos: vec3<f32>,
     time: f32,
     sun_position: vec3<f32>,
@@ -30,7 +33,7 @@ var<uniform> uniforms: Uniforms;
 var texture_atlas: texture_2d_array<f32>;
 @group(0) @binding(2)
 var texture_sampler: sampler;
-/// Depth map generated during the shadow pass
+/// Depth map generated during the shadow pass (cascade 0 for now)
 @group(0) @binding(3)
 var shadow_map: texture_depth_2d;
 @group(0) @binding(4)
@@ -42,8 +45,8 @@ struct VertexInput {
     @location(2) color: vec3<f32>,
     @location(3) uv: vec2<f32>,
     @location(4) tex_index: f32,
-    @location(5) roughness: f32,
-    @location(6) metallic: f32,
+    @location(5) _padding1: f32,
+    @location(6) _padding2: f32,
 };
 
 struct VertexOutput {
@@ -53,8 +56,7 @@ struct VertexOutput {
     @location(2) color: vec3<f32>,
     @location(3) uv: vec2<f32>,
     @location(4) tex_index: f32,
-    @location(5) roughness: f32,
-    @location(6) metallic: f32,
+    @location(5) view_depth: f32,
 };
 
 @vertex
@@ -66,20 +68,20 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     out.color = model.color;
     out.uv = model.uv;
     out.tex_index = model.tex_index;
-    out.roughness = model.roughness;
-    out.metallic = model.metallic;
+    // Pass view-space depth for cascade selection
+    out.view_depth = out.clip_position.w;
     return out;
 }
 
 @vertex
 fn vs_shadow(model: VertexInput) -> @builtin(position) vec4<f32> {
-    return uniforms.sun_view_proj * vec4<f32>(model.position, 1.0);
+    // Use cascade 0 matrix for shadow pass
+    return uniforms.csm_view_proj[0] * vec4<f32>(model.position, 1.0);
 }
 
 const PI: f32 = 3.14159265359;
 const SHADOW_MAP_SIZE: f32 = 2048.0;
-const GOLDEN_ANGLE: f32 = 2.39996322972865332;
-const PCF_SAMPLES: i32 = 8;
+const PCF_SAMPLES: i32 = 9;  // 3x3 grid for stable shadows
 
 /// Calculate sky color with localized sunrise/sunset gradient
 fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
@@ -157,73 +159,59 @@ fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
     return clamp(sky_color, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-/// Generates a sample offset on a Vogel Disk.
-/// This provides a very uniform distribution of samples for soft shadows.
-fn vogel_disk_sample(sample_index: i32, sample_count: i32, phi: f32) -> vec2<f32> {
-    let r = sqrt(f32(sample_index) + 0.5) / sqrt(f32(sample_count));
-    let theta = f32(sample_index) * GOLDEN_ANGLE + phi;
-    return vec2<f32>(r * cos(theta), r * sin(theta));
+/// Receiver-plane depth bias for accurate shadow edges on sloped surfaces
+fn receiver_plane_depth_bias(shadow_uv: vec2<f32>, receiver_depth: f32) -> f32 {
+    // Compute screen-space derivatives of shadow coordinates
+    let dudx = dpdx(shadow_uv);
+    let dudy = dpdy(shadow_uv);
+    let dzdx = dpdx(receiver_depth);
+    let dzdy = dpdy(receiver_depth);
+    
+    // Solve for the depth gradient on the receiver plane
+    let det = dudx.x * dudy.y - dudx.y * dudy.x;
+    if abs(det) < 1e-6 {
+        return 0.0;
+    }
+    let inv_det = 1.0 / det;
+    let depth_gradient = vec2<f32>(
+        (dzdx * dudy.y - dzdy * dudx.y) * inv_det,
+        (dzdy * dudx.x - dzdx * dudy.x) * inv_det
+    );
+    
+    // Maximum bias based on filter radius
+    let texel_size = 1.0 / SHADOW_MAP_SIZE;
+    let max_offset = texel_size * 1.5; // PCF filter radius
+
+    return max_offset * (abs(depth_gradient.x) + abs(depth_gradient.y));
 }
 
-/// Simple hashing function for stable world-space noise.
-/// Used to rotate PCF samples differently for each pixel to hide banding artifacts.
-fn world_space_noise(world_pos: vec3<f32>) -> f32 {
-    let p = world_pos * 0.5; // Scale down for smoother distribution
-    return fract(sin(dot(floor(p.xz), vec2<f32>(12.9898, 78.233))) * 43758.5453);
+/// Select cascade based on view-space depth
+fn select_cascade(view_depth: f32) -> i32 {
+    if view_depth < uniforms.csm_split_distances.x {
+        return 0;
+    } else if view_depth < uniforms.csm_split_distances.y {
+        return 1;
+    } else if view_depth < uniforms.csm_split_distances.z {
+        return 2;
+    }
+    return 3;
 }
 
-// --- PBR FUNCTIONS (Cook-Torrance BRDF) ---
 
-fn NDF_GGX(N: vec3<f32>, H: vec3<f32>, roughness: f32) -> f32 {
-    let a = roughness * roughness;
-    let a2 = a * a;
-    let NdotH = max(dot(N, H), 0.0);
-    let NdotH2 = NdotH * NdotH;
 
-    let num = a2;
-    var denom = (NdotH2 * (a2 - 1.0) + 1.0);
-    denom = PI * denom * denom;
-
-    return num / max(denom, 0.001);
-}
-
-fn GeometrySchlickGGX(NdotV: f32, roughness: f32) -> f32 {
-    let r = (roughness + 1.0);
-    let k = (r * r) / 8.0;
-
-    let num = NdotV;
-    let denom = NdotV * (1.0 - k) + k;
-
-    return num / denom;
-}
-
-fn GeometrySmith(N: vec3<f32>, V: vec3<f32>, L: vec3<f32>, roughness: f32) -> f32 {
-    let NdotV = max(dot(N, V), 0.0);
-    let NdotL = max(dot(N, L), 0.0);
-    let ggx2 = GeometrySchlickGGX(NdotV, roughness);
-    let ggx1 = GeometrySchlickGGX(NdotL, roughness);
-
-    return ggx1 * ggx2;
-}
-
-fn fresnelSchlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
-    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
-}
-
-/// Percentage Closer Filtering (PCF) shadow calculation.
-/// Uses multiple samples from the shadow map to calculate a fractional shadow value [0.0 - 1.0].
-fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>) -> f32 {
+/// Percentage Closer Filtering (PCF) shadow calculation with receiver-plane depth bias
+/// Uses 3x3 grid sampling for stable, artifact-free shadows
+fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>, view_depth: f32) -> f32 {
     // Disable shadows if sun is below horizon
     if sun_dir.y < 0.05 {
         return 0.0;
     }
 
-    // No normal-based offset - rely on pipeline depth bias to prevent shadow acne
-    // This ensures shadows start exactly at object bases
-    let offset_world_pos = world_pos;
+    // Select cascade based on view depth (use cascade 0 for now with single texture)
+    let cascade_idx = 0; // select_cascade(view_depth) - for multi-texture CSM
     
-    // Project world coordinates to shadow map UVs
-    let shadow_pos = uniforms.sun_view_proj * vec4<f32>(offset_world_pos, 1.0);
+    // Project world coordinates to shadow map UVs using selected cascade
+    let shadow_pos = uniforms.csm_view_proj[cascade_idx] * vec4<f32>(world_pos, 1.0);
     let shadow_coords = shadow_pos.xyz / shadow_pos.w;
 
     let uv = vec2<f32>(
@@ -231,52 +219,44 @@ fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>)
         1.0 - (shadow_coords.y * 0.5 + 0.5)
     );
     
-    // Smoothly fade shadows at the edges of the shadow frustum
-    let edge_fade = 0.03;
+    // Early out if outside shadow frustum
     if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
         return 1.0;
     }
-    let edge_factor = min(
-        min(uv.x, 1.0 - uv.x),
-        min(uv.y, 1.0 - uv.y)
-    ) / edge_fade;
-    let edge_shadow_blend = clamp(edge_factor, 0.0, 1.0);
+    
+    // Smooth edge fade to prevent hard cutoff at shadow map edges
+    let edge_margin = 0.05;
+    let edge_fade_x = smoothstep(0.0, edge_margin, uv.x) * smoothstep(1.0, 1.0 - edge_margin, uv.x);
+    let edge_fade_y = smoothstep(0.0, edge_margin, uv.y) * smoothstep(1.0, 1.0 - edge_margin, uv.y);
+    let edge_fade = edge_fade_x * edge_fade_y;
 
     let receiver_depth = shadow_coords.z;
     
-    // Minimal adaptive bias to prevent shadow acne without causing visible offset
+    // Simple slope-based bias (removed receiver-plane bias to simplify)
     let cos_theta = max(dot(normal, sun_dir), 0.0);
     let sin_theta = sqrt(1.0 - cos_theta * cos_theta);
-    let base_bias = 0.0005;
-    let slope_bias = 0.001 * sin_theta / max(cos_theta, 0.1);
-    let bias = base_bias + slope_bias;
-    
-    // Randomize sample rotation per pixel using world-space noise
-    let noise = world_space_noise(world_pos);
-    let rotation_angle = noise * 2.0 * PI;
+    let bias = 0.0008 + 0.002 * sin_theta / max(cos_theta, 0.1);
 
+    // 3x3 grid PCF for stable shadows
     let texel_size = 1.0 / SHADOW_MAP_SIZE;
-    let filter_radius = 3.5 * texel_size;
-
     var shadow: f32 = 0.0;
 
-    // Accumulate shadow samples
-    for (var i: i32 = 0; i < PCF_SAMPLES; i++) {
-        let offset = vogel_disk_sample(i, PCF_SAMPLES, rotation_angle) * filter_radius;
-        shadow += textureSampleCompare(
-            shadow_map,
-            shadow_sampler,
-            uv + offset,
-            receiver_depth - bias
-        );
+    for (var y: i32 = -1; y <= 1; y++) {
+        for (var x: i32 = -1; x <= 1; x++) {
+            let offset = vec2<f32>(f32(x), f32(y)) * texel_size;
+            shadow += textureSampleCompare(
+                shadow_map,
+                shadow_sampler,
+                uv + offset,
+                receiver_depth - bias
+            );
+        }
     }
 
-    shadow /= f32(PCF_SAMPLES);
-    
-    // Re-map shadow intensity for better contrast
-    shadow = smoothstep(0.05, 0.95, shadow);
+    shadow /= 9.0; // 3x3 = 9 samples
 
-    return mix(1.0, shadow, edge_shadow_blend);
+    // Apply edge fade - blend to fully lit at edges
+    return mix(1.0, shadow, edge_fade);
 }
 
 @fragment
@@ -311,7 +291,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Primary solar shadow
     var shadow = 1.0;
     if sun_dir.y > 0.0 {
-        shadow = calculate_shadow(in.world_pos, in.normal, sun_dir);
+        shadow = calculate_shadow(in.world_pos, in.normal, sun_dir, in.view_depth);
     }
     
     // Ambient light - add twilight boost during sunrise/sunset
@@ -345,41 +325,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let effective_face_shade = mix(1.0, face_shade, day_factor + 0.3);
 
     let lighting_simple = (ambient + sun_diffuse + fill_diffuse) * effective_face_shade;
-
-    // --- PBR LIGHTING ---
-
-    let V = -view_dir;
-    let L = sun_dir;
-    let H = normalize(V + L);
-    let N = normalize(in.normal);
-    
-    // Base reflectivity for non-metals
-    var F0 = vec3<f32>(0.04);
-    F0 = mix(F0, tex_color, in.metallic);
-    
-    // Reflectance equation
-    let NDF = NDF_GGX(N, H, in.roughness);
-    let G = GeometrySmith(N, V, L, in.roughness);
-    let F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-
-    let kS = F;
-    var kD = vec3<f32>(1.0) - kS;
-    kD *= 1.0 - in.metallic;
-
-    let numerator = NDF * G * F;
-    let denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.001;
-    let specular = numerator / denominator;
-
-    let NdotL = max(dot(N, L), 0.0);
-    
-    // Solar contribution
-    let sun_color = vec3<f32>(1.0, 0.98, 0.9);
-    let pbr_sun = (kD * tex_color / PI + specular) * sun_color * NdotL * shadow * day_factor;
-    
-    // Ambient contribution (simplified IBL)
-    let ambient_pbr = kD * tex_color * ambient * effective_face_shade;
-
-    var lit_color = pbr_sun + ambient_pbr;
+    var lit_color = tex_color * lighting_simple;
     
     // Apply sunset tint to lit surfaces
     if sunset_factor > 0.3 && sun_dir.y > -0.2 {

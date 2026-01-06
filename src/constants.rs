@@ -40,3 +40,8 @@ pub const PLAYER_WIDTH: f32 = 0.35;
 pub const PLAYER_BASE_SPEED: f32 = 4.5;
 pub const PLAYER_SPRINT_SPEED: f32 = 6.5;
 pub const PLAYER_JUMP_HEIGHT: f32 = 1.0;
+
+// CSM (Cascaded Shadow Maps) constants
+pub const CSM_CASCADE_COUNT: usize = 4;
+pub const CSM_CASCADE_SPLITS: [f32; CSM_CASCADE_COUNT] = [16.0, 48.0, 128.0, 300.0];
+pub const CSM_SHADOW_MAP_SIZE: u32 = 2048;

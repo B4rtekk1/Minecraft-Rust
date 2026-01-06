@@ -14,7 +14,8 @@
 struct Uniforms {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
-    sun_view_proj: mat4x4<f32>,
+    csm_view_proj: array<mat4x4<f32>, 4>,
+    csm_split_distances: vec4<f32>,
     camera_pos: vec3<f32>,
     time: f32,
     sun_position: vec3<f32>,
@@ -187,9 +188,9 @@ fn vs_water(model: VertexInput) -> VertexOutput {
 }
 
 const PI: f32 = 3.14159265359;
-const SHADOW_MAP_SIZE: f32 = 2048.0;
+const SHADOW_MAP_SIZE: f32 = 4096.0;
 const GOLDEN_ANGLE: f32 = 2.39996322972865332;
-const PCF_SAMPLES: i32 = 24;
+const PCF_SAMPLES: i32 = 16;
 const SSR_MAX_STEPS: i32 = 64;
 const SSR_MAX_DISTANCE: f32 = 60.0;
 const SSR_THICKNESS_BASE: f32 = 0.05;
@@ -395,7 +396,7 @@ fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>)
     // No normal-based offset - rely on pipeline depth bias to prevent shadow acne
     let offset_world_pos = world_pos;
 
-    let shadow_pos = uniforms.sun_view_proj * vec4<f32>(offset_world_pos, 1.0);
+    let shadow_pos = uniforms.csm_view_proj[0] * vec4<f32>(offset_world_pos, 1.0);
     let shadow_coords = shadow_pos.xyz / shadow_pos.w;
 
     let uv = vec2<f32>(
@@ -509,12 +510,13 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     } else {
         // SSR + sky fallback
         let ssr_result = ssr_trace(in.world_pos, reflect_dir_ssr, in.clip_position);
-        // Smooth the confidence to reduce flickering during movement
-        // Use higher threshold (0.15) and smoothstep to create gradual transitions
-        let smoothed_confidence = smoothstep(0.15, 0.7, ssr_result.w);
-        if smoothed_confidence > 0.01 {
-            // Reduce max blend to 0.75 to always keep some sky influence for stability
-            let ssr_blend = smoothed_confidence * 0.75 * ssr_distance_fade;
+        // Heavily smooth the confidence to reduce flickering during camera movement
+        // Use higher threshold (0.25) and tighter smoothstep for more stable transitions
+        let smoothed_confidence = smoothstep(0.25, 0.85, ssr_result.w);
+        if smoothed_confidence > 0.05 {
+            // Reduce max blend to 0.5 to always keep significant sky influence for stability
+            // This reduces SSR "popping" when reflections come and go
+            let ssr_blend = smoothed_confidence * 0.5 * ssr_distance_fade;
             reflection_color = mix(sky_color, ssr_result.rgb, ssr_blend);
         }
     }
@@ -529,7 +531,8 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     let ambient = mix(ambient_night, ambient_day, day_factor);
     
     // Mix base (refracted) color with reflected color based on Fresnel
-    var water_color = mix(base_water, reflection_color, fresnel * 0.6);
+    // Reduce fresnel multiplier for more stable appearance during camera movement
+    var water_color = mix(base_water, reflection_color, fresnel * 0.45);
     water_color += vec3<f32>(shimmer * shadow * day_factor);
     
     // Solar specular highlights (sun glisten)

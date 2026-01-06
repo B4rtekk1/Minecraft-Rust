@@ -5,7 +5,10 @@ use bytemuck::{Pod, Zeroable};
 pub struct Uniforms {
     pub view_proj: [[f32; 4]; 4],
     pub inv_view_proj: [[f32; 4]; 4],
-    pub sun_view_proj: [[f32; 4]; 4],
+    /// CSM cascade view-projection matrices (4 cascades)
+    pub csm_view_proj: [[[[f32; 4]; 4]; 1]; 4],
+    /// View-space split distances for each cascade
+    pub csm_split_distances: [f32; 4],
     pub camera_pos: [f32; 3],
     pub time: f32,
     pub sun_position: [f32; 3],
