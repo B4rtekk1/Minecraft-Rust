@@ -197,6 +197,7 @@ impl State {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
+        tracing::info!("WGPU Instance created successfully");
 
         let surface = instance.create_surface(window.clone()).unwrap();
 
@@ -209,11 +210,23 @@ impl State {
             .await
             .unwrap();
 
+        let info = adapter.get_info();
+        tracing::info!(
+            "Selected adapter: {} on {:?} backend",
+            info.name,
+            info.backend
+        );
+        if info.device_type == wgpu::DeviceType::Cpu {
+            tracing::warn!(
+                "Warning: Running on CPU (Software Renderer). Performance will be poor."
+            );
+        }
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
+                required_limits: adapter.limits(),
                 memory_hints: Default::default(),
                 experimental_features: Default::default(),
                 trace: wgpu::Trace::Off,
@@ -313,18 +326,18 @@ impl State {
         let (atlas_data, atlas_width, atlas_height) =
             match load_texture_atlas_from_file("assets/textures.png") {
                 Ok((data, width, height)) => {
-                    println!("Loaded texture atlas from PNG: {}x{}", width, height);
+                    tracing::info!("Loaded texture atlas from PNG: {}x{}", width, height);
                     (data, width, height)
                 }
                 Err(e) => {
-                    eprintln!("Failed to load assets/textures.png: {}", e);
+                    tracing::error!("Failed to load assets/textures.png: {}", e);
                     match load_texture_atlas_from_file("assets/textures.jpg") {
                         Ok((data, width, height)) => {
-                            println!("Loaded texture atlas from JPG: {}x{}", width, height);
+                            tracing::info!("Loaded texture atlas from JPG: {}x{}", width, height);
                             (data, width, height)
                         }
                         Err(e) => {
-                            eprintln!("Failed to load assets/textures.jpg: {}", e);
+                            tracing::error!("Failed to load assets/textures.jpg: {}", e);
                             match load_texture_atlas_from_file("textures.png") {
                                 Ok((data, width, height)) => {
                                     println!(
@@ -344,8 +357,10 @@ impl State {
                                             (data, width, height)
                                         }
                                         Err(e) => {
-                                            eprintln!("Failed to load textures.jpg: {}", e);
-                                            println!("Using procedural texture atlas generation.");
+                                            tracing::error!("Failed to load textures.jpg: {}", e);
+                                            tracing::warn!(
+                                                "Using procedural texture atlas generation."
+                                            );
                                             let data = generate_texture_atlas();
                                             (data, TEXTURE_SIZE, TEXTURE_SIZE)
                                         }
@@ -1207,11 +1222,11 @@ impl State {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        println!("Generating world...");
+        tracing::info!("Generating world...");
         let world = Arc::new(parking_lot::RwLock::new(World::new()));
         let spawn = world.read().find_spawn_point();
         let camera = Camera::new(spawn);
-        println!("World generated! Spawn: {:?}", spawn);
+        tracing::info!("World generated! Spawn: {:?}", spawn);
 
         let seed = world.read().seed;
         let chunk_loader = ChunkLoader::new(seed);
@@ -3603,12 +3618,12 @@ pub fn run_game() {
     // If server mode, run server and return (headless)
     if args.server {
         let addr = format!("0.0.0.0:{}", args.port);
-        println!("====================================================");
-        println!("Starting Headless Dedicated Server on {}...", addr);
-        println!("Note: This is a console-only server. No game window will appear.");
-        println!("To play the game, run the application without --server.");
-        println!("Press Ctrl+C to stop the server.");
-        println!("====================================================");
+        tracing::info!("====================================================");
+        tracing::info!("Starting Headless Dedicated Server on {}...", addr);
+        tracing::info!("Note: This is a console-only server. No game window will appear.");
+        tracing::info!("To play the game, run the application without --server.");
+        tracing::info!("Press Ctrl+C to stop the server.");
+        tracing::info!("====================================================");
 
         use std::io::Write;
         std::io::stdout().flush().unwrap();

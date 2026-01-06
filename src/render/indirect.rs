@@ -11,11 +11,12 @@ use crate::core::vertex::Vertex;
 use crate::render::frustum::AABB;
 
 /// Maximum number of subchunks that can be stored in unified buffers
-const MAX_SUBCHUNKS: usize = 16384;
-/// Maximum vertices across all subchunks (~252MB at 56 bytes per vertex - under 256MB wgpu limit)
-const MAX_VERTICES: usize = 4_500_000;
-/// Maximum indices across all subchunks (128MB at 4 bytes per index)
-const MAX_INDICES: usize = 32_000_000;
+/// Maximum number of subchunks that can be stored in unified buffers
+const MAX_SUBCHUNKS: usize = 32768;
+/// Maximum vertices across all subchunks (~560MB at 56 bytes per vertex)
+const MAX_VERTICES: usize = 10_000_000;
+/// Maximum indices across all subchunks (256MB at 4 bytes per index)
+const MAX_INDICES: usize = 64_000_000;
 
 /// wgpu DrawIndexedIndirect command structure (matches GPU layout)
 #[repr(C)]
@@ -102,6 +103,7 @@ pub struct IndirectManager {
     next_vertex_offset: u32,
     next_index_offset: u32,
     active_subchunk_count: u32,
+    free_slots: Vec<usize>,
 
     // Compute pipeline for culling
     cull_pipeline: wgpu::ComputePipeline,
@@ -263,6 +265,7 @@ impl IndirectManager {
             next_vertex_offset: 0,
             next_index_offset: 0,
             active_subchunk_count: 0,
+            free_slots: (0..MAX_SUBCHUNKS).rev().collect(),
             cull_pipeline,
             cull_bind_group_layout,
             cull_bind_group: None,
@@ -321,19 +324,21 @@ impl IndirectManager {
         let vertex_count = vertices.len() as u32;
         let index_count = indices.len() as u32;
 
-        // Check if we have space
+        // For vertex/index buffers, if we run out of space, we reset (simple for now)
         if self.next_vertex_offset + vertex_count > MAX_VERTICES as u32
             || self.next_index_offset + index_count > MAX_INDICES as u32
         {
-            // Buffer full - fall back to per-subchunk rendering
-            return false;
+            println!("Unified buffer full, clearing indirect draw cache...");
+            self.clear_gpu_data(queue);
         }
 
-        let slot_index = self.allocations.len();
-        if slot_index >= MAX_SUBCHUNKS {
-            // Max slots reached
-            return false;
-        }
+        let slot_index = match self.free_slots.pop() {
+            Some(idx) => idx,
+            None => {
+                println!("Max subchunks reached!");
+                return false;
+            }
+        };
 
         // Allocate space
         let alloc = SubchunkAlloc {
@@ -404,8 +409,33 @@ impl IndirectManager {
                 meta_byte_offset as u64,
                 bytemuck::bytes_of(&subchunk_meta),
             );
+            self.free_slots.push(alloc.slot_index);
             self.active_subchunk_count = self.allocations.len() as u32;
         }
+    }
+
+    /// Reset vertex/index offsets and clear allocations
+    fn clear_gpu_data(&mut self, queue: &wgpu::Queue) {
+        // Zero out the metadata for already uploaded subchunks to prevent ghosts
+        for alloc in self.allocations.values() {
+            let subchunk_meta = SubchunkGpuMeta {
+                aabb_min: [0.0; 4],
+                aabb_max: [0.0; 4],
+                draw_data: [0, 0, 0, 0],
+            };
+            let meta_byte_offset = alloc.slot_index * std::mem::size_of::<SubchunkGpuMeta>();
+            queue.write_buffer(
+                &self.subchunk_meta_buffer,
+                meta_byte_offset as u64,
+                bytemuck::bytes_of(&subchunk_meta),
+            );
+            self.free_slots.push(alloc.slot_index);
+        }
+
+        self.allocations.clear();
+        self.next_vertex_offset = 0;
+        self.next_index_offset = 0;
+        self.active_subchunk_count = 0;
     }
 
     /// Dispatch GPU culling compute shader
@@ -475,5 +505,6 @@ impl IndirectManager {
         self.next_vertex_offset = 0;
         self.next_index_offset = 0;
         self.active_subchunk_count = 0;
+        self.free_slots = (0..MAX_SUBCHUNKS).rev().collect();
     }
 }

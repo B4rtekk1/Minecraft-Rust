@@ -1,0 +1,197 @@
+warning: unused imports: `Read` and `Write`
+ --> src\save.rs:4:37
+  |
+4 | use std::io::{BufReader, BufWriter, Read, Write};
+  |                                     ^^^^  ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `vertex_count` and `index_count` are never read
+  --> src\render\indirect.rs:75:5
+   |
+73 | struct SubchunkAlloc {
+   |        ------------- fields in this struct
+74 |     vertex_offset: u32,
+75 |     vertex_count: u32,
+   |     ^^^^^^^^^^^^
+76 |     index_offset: u32,
+77 |     index_count: u32,
+   |     ^^^^^^^^^^^
+   |
+   = note: `SubchunkAlloc` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `noise_ore` is never read
+  --> src\world\generator.rs:27:5
+   |
+14 | pub struct ChunkGenerator {
+   |            -------------- field in this struct
+...
+27 |     noise_ore: FastNoiseLite,
+   |     ^^^^^^^^^
+
+warning: field `simplex_ore` is never read
+  --> src\world\terrain.rs:25:5
+   |
+12 | pub struct World {
+   |            ----- field in this struct
+...
+25 |     simplex_ore: Simplex,
+   |     ^^^^^^^^^^^
+
+warning: method `get_ore_at` is never used
+   --> src\world\terrain.rs:401:8
+    |
+ 30 | impl World {
+    | ---------- method in this implementation
+...
+401 |     fn get_ore_at(&self, x: i32, y: i32, z: i32) -> Option<BlockType> {
+    |        ^^^^^^^^^^
+
+warning: `render3d` (lib) generated 5 warnings (run `cargo fix --lib -p render3d` to apply 1 suggestion)
+    Checking render3d v0.1.0 (C:\Users\Bartosz Kasyna\OneDrive - Wydzia┼é Edukacji Urz─ůd Miasta Gda┼äska\Pulpit\Render3D\render3d)
+warning: unused imports: `CSM_CASCADE_SPLITS` and `SubchunkKey`
+  --> src\app\game.rs:47:48
+   |
+47 |     ASYNC_WORKER_COUNT, BlockType, CHUNK_SIZE, CSM_CASCADE_SPLITS, Camera, DEFAULT_WORLD_FILE,
+   |                                                ^^^^^^^^^^^^^^^^^^
+...
+50 |     SubchunkKey, TEXTURE_SIZE, Uniforms, Vertex, World, build_crosshair, build_player_model,
+   |     ^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Write`
+ --> src\multiplayer\protocol.rs:1:55
+  |
+1 | use std::io::{Cursor, Error, ErrorKind, Read, Result, Write};
+  |                                                       ^^^^^
+
+warning: unused import: `crate::multiplayer::quic::QuicServer`
+ --> src\multiplayer\server.rs:2:5
+  |
+2 | use crate::multiplayer::quic::QuicServer;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::multiplayer::tcp::TcpServer`
+ --> src\multiplayer\server.rs:3:5
+  |
+3 | use crate::multiplayer::tcp::TcpServer;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `mpsc`
+ --> src\multiplayer\tcp.rs:9:27
+  |
+9 | use tokio::sync::{RwLock, mpsc};
+  |                           ^^^^
+
+warning: unused imports: `ClientConfig`, `ClientEvent`, `ConnectionState`, and `GameClient`
+  --> src\multiplayer\mod.rs:11:18
+   |
+11 | pub use client::{ClientConfig, ClientEvent, ConnectionState, GameClient};
+   |                  ^^^^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused imports: `Packet` and `PlayerId`
+  --> src\multiplayer\mod.rs:12:20
+   |
+12 | pub use protocol::{Packet, PlayerId};
+   |                    ^^^^^^  ^^^^^^^^
+
+warning: unused imports: `QuicClient`, `QuicConnection`, and `QuicServer`
+  --> src\multiplayer\mod.rs:13:16
+   |
+13 | pub use quic::{QuicClient, QuicConnection, QuicServer};
+   |                ^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused imports: `GameServer`, `PlayerInfo`, `ServerConfig`, and `ServerEvent`
+  --> src\multiplayer\mod.rs:14:18
+   |
+14 | pub use server::{GameServer, PlayerInfo, ServerConfig, ServerEvent};
+   |                  ^^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^
+
+warning: unused imports: `TcpClient`, `TcpConnection`, and `TcpServer`
+  --> src\multiplayer\mod.rs:15:15
+   |
+15 | pub use tcp::{TcpClient, TcpConnection, TcpServer};
+   |               ^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `transport::TransportType`
+  --> src\multiplayer\mod.rs:16:9
+   |
+16 | pub use transport::TransportType;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0560]: struct `wgpu::Color` has no field named `alpha`
+    --> src\app\game.rs:2907:29
+     |
+2907 | ...                   alpha: 1.0,
+     |                       ^^^^^ `wgpu::Color` does not have this field
+     |
+     = note: available fields are: `a`
+
+error[E0560]: struct `wgpu::Color` has no field named `alpha`
+    --> src\app\game.rs:2987:29
+     |
+2987 | ...                   alpha: 1.0,
+     |                       ^^^^^ `wgpu::Color` does not have this field
+     |
+     = note: available fields are: `a`
+
+warning: unused import: `tokio::io::AsyncWriteExt`
+  --> src\multiplayer\quic.rs:86:17
+   |
+86 |             use tokio::io::AsyncWriteExt;
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `terrain_vertices`
+    --> src\app\game.rs:2271:13
+     |
+2271 |         let terrain_vertices = result.terrain.0.clone();
+     |             ^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_terrain_vertices`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `terrain_indices`
+    --> src\app\game.rs:2272:13
+     |
+2272 |         let terrain_indices = result.terrain.1.clone();
+     |             ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_terrain_indices`
+
+warning: unused variable: `cx`
+    --> src\app\game.rs:2273:13
+     |
+2273 |         let cx = result.cx;
+     |             ^^ help: if this is intentional, prefix it with an underscore: `_cx`
+
+warning: unused variable: `cz`
+    --> src\app\game.rs:2274:13
+     |
+2274 |         let cz = result.cz;
+     |             ^^ help: if this is intentional, prefix it with an underscore: `_cz`
+
+warning: unused variable: `sy`
+    --> src\app\game.rs:2275:13
+     |
+2275 |         let sy = result.sy;
+     |             ^^ help: if this is intentional, prefix it with an underscore: `_sy`
+
+warning: variable `aabb_copy` is assigned to, but never used
+    --> src\app\game.rs:2277:13
+     |
+2277 |         let aabb_copy;
+     |             ^^^^^^^^^
+     |
+     = note: consider using `_aabb_copy` instead
+
+warning: value assigned to `aabb_copy` is never read
+    --> src\app\game.rs:2285:17
+     |
+2285 |                 aabb_copy = subchunk.aabb;
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0560`.
+warning: `render3d` (bin "render3d") generated 19 warnings
+error: could not compile `render3d` (bin "render3d") due to 2 previous errors; 19 warnings emitted
