@@ -2393,19 +2393,22 @@ impl State {
             }
         } // world lock released here
 
-        // IndirectManager upload disabled for now - buffer size limits make it impractical
-        // without greedy meshing. The 256MB wgpu limit cannot hold all terrain geometry.
-        // TODO: Enable after implementing greedy meshing to reduce geometry by 50-90%
-        // if !terrain_vertices.is_empty() && !terrain_indices.is_empty() {
-        //     self.indirect_manager.upload_subchunk(
-        //         &self.device,
-        //         &self.queue,
-        //         SubchunkKey { chunk_x: cx, chunk_z: cz, subchunk_y: sy },
-        //         &terrain_vertices,
-        //         &terrain_indices,
-        //         &aabb_copy,
-        //     );
-        // }
+        // IndirectManager upload re-enabled
+        if !terrain_vertices.is_empty() && !terrain_indices.is_empty() {
+            let key = render3d::render::indirect::SubchunkKey {
+                chunk_x: cx,
+                chunk_z: cz,
+                subchunk_y: sy,
+            };
+            self.indirect_manager.upload_subchunk(
+                &self.device,
+                &self.queue,
+                key,
+                &terrain_vertices,
+                &terrain_indices,
+                &aabb_copy,
+            );
+        }
     }
 
     fn update(&mut self) {
@@ -2895,11 +2898,18 @@ impl State {
 
             ssr_terrain_pass.set_pipeline(&self.ssr_render_pipeline);
             ssr_terrain_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            for (vb, ib, num_indices, _) in &visible_terrain {
-                ssr_terrain_pass.set_vertex_buffer(0, vb.slice(..));
-                ssr_terrain_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                ssr_terrain_pass.draw_indexed(0..*num_indices, 0, 0..1);
-            }
+
+            // Use GPU Indirect Drawing for terrain
+            ssr_terrain_pass.set_vertex_buffer(0, self.indirect_manager.vertex_buffer().slice(..));
+            ssr_terrain_pass.set_index_buffer(
+                self.indirect_manager.index_buffer().slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            ssr_terrain_pass.multi_draw_indexed_indirect(
+                self.indirect_manager.draw_commands(),
+                0,
+                self.indirect_manager.active_count(),
+            );
         }
         // Main Scene Pass: Render Sky, Terrain, Water, and Objects
         // When SSAO is enabled, resolve to scene_color_view for post-processing
@@ -2945,14 +2955,20 @@ impl State {
                 .set_index_buffer(self.sun_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..6, 0, 0..1);
 
-            // 2. Draw Terrain (per-subchunk for now - indirect drawing needs greedy meshing first)
+            // 2. Draw Terrain (using GPU Indirect Drawing)
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            for (vb, ib, num_indices, _) in &visible_terrain {
-                render_pass.set_vertex_buffer(0, vb.slice(..));
-                render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..*num_indices, 0, 0..1);
-            }
+
+            render_pass.set_vertex_buffer(0, self.indirect_manager.vertex_buffer().slice(..));
+            render_pass.set_index_buffer(
+                self.indirect_manager.index_buffer().slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            render_pass.multi_draw_indexed_indirect(
+                self.indirect_manager.draw_commands(),
+                0,
+                self.indirect_manager.active_count(),
+            );
 
             // 3. Draw Water (Reflective)
             render_pass.set_pipeline(&self.water_pipeline);
