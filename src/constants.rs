@@ -38,7 +38,7 @@ pub const PLAYER_HEIGHT: f32 = 1.8;
 pub const PLAYER_CROUCH_HEIGHT: f32 = 1.5;
 pub const PLAYER_WIDTH: f32 = 0.35;
 pub const PLAYER_BASE_SPEED: f32 = 4.5;
-pub const PLAYER_SPRINT_SPEED: f32 = 6.5;
+pub const PLAYER_SPRINT_SPEED: f32 = 15.0;
 pub const PLAYER_JUMP_HEIGHT: f32 = 1.0;
 
 // CSM (Cascaded Shadow Maps) constants

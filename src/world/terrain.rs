@@ -33,6 +33,10 @@ impl World {
     }
 
     pub fn new_with_seed(seed: u32) -> Self {
+        use crate::world::generator::ChunkGenerator;
+
+        let generator = ChunkGenerator::new(seed);
+
         let mut world = World {
             chunks: HashMap::new(),
             simplex_continents: Simplex::new(seed),
@@ -58,7 +62,11 @@ impl World {
         let initial_radius = 6;
         for cx in (spawn_cx - initial_radius)..=(spawn_cx + initial_radius) {
             for cz in (spawn_cz - initial_radius)..=(spawn_cz + initial_radius) {
-                world.ensure_chunk_generated(cx, cz);
+                // Use ChunkGenerator for consistent terrain with async loader
+                if !world.chunks.contains_key(&(cx, cz)) {
+                    let chunk = generator.generate_chunk(cx, cz);
+                    world.chunks.insert((cx, cz), chunk);
+                }
             }
         }
 
