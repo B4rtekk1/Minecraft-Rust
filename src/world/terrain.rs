@@ -915,6 +915,21 @@ impl World {
         };
 
         if is_large {
+            // Convert grass to dirt under the large tree trunk (2x2)
+            for dx in 0..=1 {
+                for dz in 0..=1 {
+                    let tx = lx + dx;
+                    let tz = lz + dz;
+                    if tx >= 0 && tx < CHUNK_SIZE && tz >= 0 && tz < CHUNK_SIZE {
+                        // Replace grass with dirt under trunk
+                        if chunk.get_block(tx, y - 1, tz) == BlockType::Grass {
+                            chunk.set_block(tx, y - 1, tz, BlockType::Dirt);
+                        }
+                    }
+                }
+            }
+
+            // Place trunk
             for ty in 0..trunk_height {
                 for dx in 0..=1 {
                     for dz in 0..=1 {
@@ -952,7 +967,9 @@ impl World {
                         let dist = (fx * fx + (dy as f32 - 1.0).powi(2) + fz * fz).sqrt();
 
                         if dist <= crown_radius {
-                            if chunk.get_block(nlx, nly, nlz) == BlockType::Air {
+                            let existing = chunk.get_block(nlx, nly, nlz);
+                            // Only place leaves on air or other leaves
+                            if existing == BlockType::Air || existing == BlockType::Leaves {
                                 chunk.set_block(nlx, nly, nlz, BlockType::Leaves);
                             }
                         }
@@ -960,6 +977,12 @@ impl World {
                 }
             }
         } else {
+            // Convert grass to dirt under the small tree trunk
+            if chunk.get_block(lx, y - 1, lz) == BlockType::Grass {
+                chunk.set_block(lx, y - 1, lz, BlockType::Dirt);
+            }
+
+            // Place trunk
             for ty in 0..trunk_height {
                 chunk.set_block(lx, y + ty, lz, BlockType::Wood);
             }
@@ -987,7 +1010,9 @@ impl World {
 
                         let dist = ((dx * dx + (dy - 1) * (dy - 1) + dz * dz) as f32).sqrt();
                         if dist <= crown_radius {
-                            if chunk.get_block(nlx, nly, nlz) == BlockType::Air {
+                            let existing = chunk.get_block(nlx, nly, nlz);
+                            // Only place leaves on air or other leaves
+                            if existing == BlockType::Air || existing == BlockType::Leaves {
                                 chunk.set_block(nlx, nly, nlz, BlockType::Leaves);
                             }
                         }

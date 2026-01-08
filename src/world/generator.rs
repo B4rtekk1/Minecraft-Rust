@@ -660,6 +660,34 @@ impl ChunkGenerator {
     }
 
     fn can_place_tree(&self, chunk: &Chunk, lx: i32, y: i32, lz: i32, is_large: bool) -> bool {
+        // Check ground is valid (Grass or Dirt only)
+        let ground_block = chunk.get_block(lx, y - 1, lz);
+        if !matches!(ground_block, BlockType::Grass | BlockType::Dirt) {
+            return false;
+        }
+
+        // Check neighbors don't have invalid blocks (Stone, Gravel, Sand, Water, Ice)
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                let nx = lx + dx;
+                let nz = lz + dz;
+                if nx >= 0 && nx < CHUNK_SIZE && nz >= 0 && nz < CHUNK_SIZE {
+                    let neighbor = chunk.get_block(nx, y - 1, nz);
+                    if matches!(
+                        neighbor,
+                        BlockType::Stone
+                            | BlockType::Gravel
+                            | BlockType::Sand
+                            | BlockType::Water
+                            | BlockType::Ice
+                    ) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // Check no existing trees nearby
         let min_distance = if is_large { 5 } else { 3 };
         for dx in -min_distance..=min_distance {
             for dz in -min_distance..=min_distance {
@@ -695,6 +723,11 @@ impl ChunkGenerator {
     ) {
         let trunk_height = if is_large { 8 } else { 5 };
 
+        // Convert grass to dirt under the tree trunk
+        if chunk.get_block(lx, y - 1, lz) == BlockType::Grass {
+            chunk.set_block(lx, y - 1, lz, BlockType::Dirt);
+        }
+
         // Trunk
         for dy in 0..trunk_height {
             chunk.set_block(lx, y + dy, lz, BlockType::Wood);
@@ -716,13 +749,17 @@ impl ChunkGenerator {
                     let nz = lz + dz;
                     if nx >= 0 && nx < CHUNK_SIZE && nz >= 0 && nz < CHUNK_SIZE {
                         let ny = y + dy;
-                        if ny < WORLD_HEIGHT && chunk.get_block(nx, ny, nz) == BlockType::Air {
-                            // Skip corners for more natural shape
-                            if dx.abs() != radius
-                                || dz.abs() != radius
-                                || (self.position_hash(nx, nz) % 2 == 0)
-                            {
-                                chunk.set_block(nx, ny, nz, BlockType::Leaves);
+                        if ny < WORLD_HEIGHT {
+                            let existing = chunk.get_block(nx, ny, nz);
+                            // Only place leaves on air or other leaves
+                            if existing == BlockType::Air || existing == BlockType::Leaves {
+                                // Skip corners for more natural shape
+                                if dx.abs() != radius
+                                    || dz.abs() != radius
+                                    || (self.position_hash(nx, nz) % 2 == 0)
+                                {
+                                    chunk.set_block(nx, ny, nz, BlockType::Leaves);
+                                }
                             }
                         }
                     }
@@ -733,7 +770,10 @@ impl ChunkGenerator {
         // Top leaves
         let top_y = y + trunk_height;
         if top_y < WORLD_HEIGHT {
-            chunk.set_block(lx, top_y, lz, BlockType::Leaves);
+            let existing = chunk.get_block(lx, top_y, lz);
+            if existing == BlockType::Air || existing == BlockType::Leaves {
+                chunk.set_block(lx, top_y, lz, BlockType::Leaves);
+            }
         }
     }
 

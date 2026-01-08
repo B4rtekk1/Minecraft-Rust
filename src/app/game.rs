@@ -1230,7 +1230,8 @@ impl State {
 
         let seed = world.read().seed;
         let chunk_loader = ChunkLoader::new(seed);
-        let mesh_loader = render3d::MeshLoader::new(Arc::clone(&world), ASYNC_WORKER_COUNT);
+        let mesh_loader =
+            render3d::MeshLoader::new(Arc::clone(&world), render3d::get_mesh_worker_count());
 
         let (crosshair_vertices, crosshair_indices) = build_crosshair();
         let num_crosshair_indices = crosshair_indices.len() as u32;

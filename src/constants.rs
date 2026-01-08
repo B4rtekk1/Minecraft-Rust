@@ -45,3 +45,18 @@ pub const PLAYER_JUMP_HEIGHT: f32 = 1.0;
 pub const CSM_CASCADE_COUNT: usize = 4;
 pub const CSM_CASCADE_SPLITS: [f32; CSM_CASCADE_COUNT] = [16.0, 48.0, 128.0, 300.0];
 pub const CSM_SHADOW_MAP_SIZE: u32 = 2048;
+
+/// Get optimal chunk generation worker count based on CPU cores
+/// Reserves cores for main thread + GPU driver, splits remaining between chunk gen and mesh building
+pub fn get_chunk_worker_count() -> usize {
+    let cores = num_cpus::get();
+    let workers = ((cores.saturating_sub(2)) / 2).max(2).min(8);
+    tracing::info!("CPU cores: {}, chunk workers: {}", cores, workers);
+    workers
+}
+
+/// Get optimal mesh building worker count based on CPU cores
+pub fn get_mesh_worker_count() -> usize {
+    let cores = num_cpus::get();
+    ((cores.saturating_sub(2)) / 2).max(2).min(6)
+}

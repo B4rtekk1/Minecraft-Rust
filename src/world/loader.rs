@@ -10,7 +10,6 @@ use std::thread;
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 
-use crate::constants::ASYNC_WORKER_COUNT;
 use crate::core::chunk::Chunk;
 use crate::world::generator::ChunkGenerator;
 
@@ -62,7 +61,7 @@ pub struct ChunkLoader {
 impl ChunkLoader {
     /// Create a new ChunkLoader with worker threads
     pub fn new(seed: u32) -> Self {
-        Self::with_worker_count(ASYNC_WORKER_COUNT, seed)
+        Self::with_worker_count(crate::constants::get_chunk_worker_count(), seed)
     }
 
     /// Create a ChunkLoader with a specific number of workers
