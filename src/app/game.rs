@@ -99,6 +99,8 @@ struct State {
     depth_texture: wgpu::TextureView,
     msaa_texture_view: wgpu::TextureView,
     shadow_texture_view: wgpu::TextureView,
+    shadow_cascade_views: Vec<wgpu::TextureView>,
+    shadow_cascade_buffer: wgpu::Buffer,
     #[allow(dead_code)]
     shadow_sampler: wgpu::Sampler,
     world: Arc<parking_lot::RwLock<World>>,
@@ -279,6 +281,11 @@ impl State {
         let sun_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sun Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/sun.wgsl").into()),
+        });
+
+        let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Shadow Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/shadow.wgsl").into()),
         });
 
         let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -477,7 +484,7 @@ impl State {
             size: wgpu::Extent3d {
                 width: shadow_map_size,
                 height: shadow_map_size,
-                depth_or_array_layers: 1,
+                depth_or_array_layers: 4,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -487,8 +494,30 @@ impl State {
             view_formats: &[],
         };
         let shadow_texture = device.create_texture(&shadow_map_desc);
-        let shadow_texture_view =
-            shadow_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let shadow_texture_view = shadow_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Shadow Map Array View"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+
+        let shadow_cascade_views = (0..4)
+            .map(|i| {
+                shadow_texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some(&format!("Shadow Map Cascade View {}", i)),
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: i,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let shadow_cascade_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Shadow Cascade Buffer"),
+            size: 256 * 4, // 256 byte alignment * 4 cascades
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Shadow Sampler"),
@@ -537,7 +566,7 @@ impl State {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::D2,
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
                             multisampled: false,
                         },
                         count: None,
@@ -559,7 +588,7 @@ impl State {
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
+                        has_dynamic_offset: true,
                         min_binding_size: None,
                     },
                     count: None,
@@ -646,7 +675,7 @@ impl State {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::D2,
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
                             multisampled: false,
                         },
                         count: None,
@@ -786,7 +815,11 @@ impl State {
             layout: &shadow_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &shadow_cascade_buffer,
+                    offset: 0,
+                    size: Some(std::num::NonZeroU64::new(80).unwrap()), // Exact size of data (mat4 + float)
+                }),
             }],
             label: Some("shadow_bind_group"),
         });
@@ -976,7 +1009,7 @@ impl State {
             layout: Some(&shadow_pipeline_layout),
             cache: None,
             vertex: wgpu::VertexState {
-                module: &terrain_shader,
+                module: &shadow_shader,
                 entry_point: Some("vs_shadow"),
                 compilation_options: Default::default(),
                 buffers: &[Vertex::desc()],
@@ -1876,6 +1909,9 @@ impl State {
             depth_texture,
             msaa_texture_view,
             shadow_texture_view,
+            shadow_cascade_views,
+            shadow_cascade_buffer,
+            #[allow(dead_code)]
             shadow_sampler,
             world,
             mesh_loader,
@@ -2634,12 +2670,25 @@ impl State {
         let player_cx = (self.camera.position.x / CHUNK_SIZE as f32).floor() as i32;
         let player_cz = (self.camera.position.z / CHUNK_SIZE as f32).floor() as i32;
 
-        {
+        // Render 4 cascades for shadows
+        for i in 0..4 {
+            let cascade_matrix: [[f32; 4]; 4] = csm.cascades[i].view_proj.into();
+            let mut shadow_uniform_data = [0f32; 64]; // Ensure enough space
+            // Macierz to 16 floatów
+            shadow_uniform_data[0..16].copy_from_slice(cascade_matrix.as_flattened());
+            shadow_uniform_data[16] = time; // Czas po macierzy
+
+            self.queue.write_buffer(
+                &self.shadow_cascade_buffer,
+                (i * 256) as u64,
+                bytemuck::cast_slice(&shadow_uniform_data),
+            );
+
             let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Shadow Pass"),
+                label: Some(&format!("Shadow Pass Cascade {}", i)),
                 color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.shadow_texture_view,
+                    view: &self.shadow_cascade_views[i],
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -2650,12 +2699,9 @@ impl State {
             });
 
             shadow_pass.set_pipeline(&self.shadow_pipeline);
-            shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
+            let dynamic_offset = (i * 256) as u32;
+            shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[dynamic_offset]);
 
-            // Use GPU Indirect Drawing for shadow pass (same unified buffers as main pass)
-            // Note: Uses camera frustum culling results, not shadow frustum. This is a
-            // performance trade-off: slightly more shadows rendered than strictly necessary,
-            // but eliminates expensive per-subchunk CPU iteration.
             shadow_pass.set_vertex_buffer(0, self.indirect_manager.vertex_buffer().slice(..));
             shadow_pass.set_index_buffer(
                 self.indirect_manager.index_buffer().slice(..),

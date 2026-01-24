@@ -33,7 +33,7 @@ var texture_atlas: texture_2d_array<f32>;
 @group(0) @binding(2)
 var texture_sampler: sampler;
 @group(0) @binding(3)
-var shadow_map: texture_depth_2d;
+var shadow_map: texture_depth_2d_array;
 @group(0) @binding(4)
 var shadow_sampler: sampler_comparison;
 
@@ -64,6 +64,7 @@ struct VertexOutput {
     @location(4) tex_index: f32,
     @location(5) roughness: f32,
     @location(6) metallic: f32,
+    @location(7) view_depth: f32,
 };
 
 // ============================================================================
@@ -184,6 +185,7 @@ fn vs_water(model: VertexInput) -> VertexOutput {
     out.color = model.color;
     out.uv = model.uv;
     out.tex_index = model.tex_index;
+    out.view_depth = out.clip_position.w;
     return out;
 }
 
@@ -372,6 +374,18 @@ fn interleaved_gradient_noise(frag_coord: vec2<f32>) -> f32 {
     return fract(magic.z * fract(dot(frag_coord, magic.xy)));
 }
 
+/// Select cascade based on view-space depth
+fn select_cascade(view_depth: f32) -> i32 {
+    if view_depth < uniforms.csm_split_distances.x {
+        return 0;
+    } else if view_depth < uniforms.csm_split_distances.y {
+        return 1;
+    } else if view_depth < uniforms.csm_split_distances.z {
+        return 2;
+    }
+    return 3;
+}
+
 /// Calculate perturbed water normal for realistic ripple reflections
 /// Uses derivative of wave functions with noise and crossing wave patterns
 fn calculate_water_normal(world_pos: vec3<f32>, time: f32) -> vec3<f32> {
@@ -409,15 +423,17 @@ fn calculate_water_normal(world_pos: vec3<f32>, time: f32) -> vec3<f32> {
     return normalize(vec3<f32>(-dx, 1.0, -dz));
 }
 
-fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>, frag_coord: vec2<f32>) -> f32 {
+fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>, view_depth: f32, frag_coord: vec2<f32>) -> f32 {
     if sun_dir.y < 0.05 {
         return 0.0;
     }
+
+    let cascade_idx = select_cascade(view_depth);
     
     // No normal-based offset - rely on pipeline depth bias to prevent shadow acne
     let offset_world_pos = world_pos;
 
-    let shadow_pos = uniforms.csm_view_proj[0] * vec4<f32>(offset_world_pos, 1.0);
+    let shadow_pos = uniforms.csm_view_proj[cascade_idx] * vec4<f32>(offset_world_pos, 1.0);
     let shadow_coords = shadow_pos.xyz / shadow_pos.w;
 
     let uv = vec2<f32>(
@@ -458,6 +474,7 @@ fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>,
             shadow_map,
             shadow_sampler,
             uv + offset,
+            cascade_idx,
             receiver_depth - bias
         );
     }
@@ -549,7 +566,7 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var shadow = 1.0;
     if sun_dir.y > 0.0 {
-        shadow = calculate_shadow(in.world_pos, in.normal, sun_dir, in.clip_position.xy);
+        shadow = calculate_shadow(in.world_pos, in.normal, sun_dir, in.view_depth, in.clip_position.xy);
     }
 
     let ambient_day = 0.4;
