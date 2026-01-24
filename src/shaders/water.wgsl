@@ -289,14 +289,16 @@ fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
     // 3D angle to sun
     let cos_angle_3d = dot(normalize(view_dir), normalize(sun_dir));
     
-    // --- BASE SKY COLORS ---
+    // --- BASE SKY COLORS (Unified) ---
     let zenith_day = vec3<f32>(0.25, 0.45, 0.85);
-    let horizon_day = vec3<f32>(0.6, 0.75, 0.95);
+    let horizon_day = vec3<f32>(0.65, 0.82, 0.98);
     let zenith_night = vec3<f32>(0.001, 0.001, 0.008);
-    let horizon_night = vec3<f32>(0.01, 0.01, 0.02);
+    let horizon_night = vec3<f32>(0.015, 0.015, 0.03);
 
+    // Use a smooth mapping that keeps the horizon color more prominent but avoids hard cuts.
     let height_factor = clamp(view_height * 0.5 + 0.5, 0.0, 1.0);
-    var sky_color = mix(horizon_day, zenith_day, height_factor) * day_factor;
+    let curved_height = pow(height_factor, 0.8); // Slightly bias towards zenith for clearer sky
+    var sky_color = mix(horizon_day, zenith_day, curved_height) * day_factor;
     sky_color += mix(horizon_night, zenith_night, height_factor) * night_factor;
     
     // --- LOCALIZED SUNSET/SUNRISE EFFECT ---
@@ -336,7 +338,7 @@ fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
         sky_color += vec3<f32>(1.0, 0.95, 0.9) * sun_glow;
     }
 
-    return clamp(sky_color, vec3<f32>(0.0), vec3<f32>(1.0));
+    return clamp(sky_color, vec3<f32>(0.0), vec3<f32>(1.5));
 }
 
 fn get_poisson_sample(idx: i32, rotation: f32) -> vec2<f32> {
@@ -378,30 +380,30 @@ fn calculate_water_normal(world_pos: vec3<f32>, time: f32) -> vec3<f32> {
     let noise2 = fract(sin(dot(world_pos.xz * 0.15, vec2<f32>(39.346, 11.135))) * 43758.5453);
     let noise_offset = (noise1 - 0.5) * 0.3;
     
-    // Primary waves with noise-varied phases
-    let wave1_dx = cos(world_pos.x * 0.5 + time * 2.0 + noise_offset) * 0.025;
-    let wave2_dz = cos(world_pos.z * 0.7 + time * 1.5 + noise_offset) * 0.02;
+    // Primary waves with noise-varied phases and non-aligned frequencies
+    let wave1_dx = cos(world_pos.x * 0.37 + time * 1.8 + noise_offset) * 0.03;
+    let wave2_dz = cos(world_pos.z * 0.43 + time * 1.4 + noise_offset) * 0.025;
     
-    // Diagonal crossing waves (45 degree angles) - breaks up parallel lines
-    let diag1 = cos((world_pos.x + world_pos.z) * 0.4 + time * 2.5) * 0.018;
-    let diag2 = cos((world_pos.x - world_pos.z) * 0.35 + time * 2.2) * 0.015;
+    // Diagonal crossing waves (different angles) - breaks up parallel lines
+    let diag1 = cos((world_pos.x * 0.7 + world_pos.z * 0.7) * 0.45 + time * 2.2) * 0.02;
+    let diag2 = cos((world_pos.x * 0.7 - world_pos.z * 0.7) * 0.51 + time * 1.9) * 0.018;
     
     // Different angle waves (30, 60 degrees) for more organic look
-    let angle1 = cos((world_pos.x * 0.866 + world_pos.z * 0.5) * 0.5 + time * 1.8) * 0.012;
-    let angle2 = cos((world_pos.x * 0.5 + world_pos.z * 0.866) * 0.45 + time * 2.1) * 0.012;
-    let angle3 = cos((world_pos.x * 0.866 - world_pos.z * 0.5) * 0.55 + time * 1.9) * 0.01;
+    let angle1 = cos((world_pos.x * 0.866 + world_pos.z * 0.5) * 0.62 + time * 2.1) * 0.015;
+    let angle2 = cos((world_pos.x * 0.5 + world_pos.z * 0.866) * 0.55 + time * 1.6) * 0.015;
+    let angle3 = cos((world_pos.x * 0.866 - world_pos.z * 0.5) * 0.71 + time * 2.4) * 0.012;
     
     // Fine detail ripples with noise variation
-    let ripple_scale = 1.0 + noise2 * 0.5;
-    let ripple1 = cos(world_pos.x * 3.0 * ripple_scale + time * 4.0) * 0.008;
-    let ripple2 = cos(world_pos.z * 2.8 * ripple_scale + time * 3.5) * 0.007;
-    let ripple3 = cos((world_pos.x + world_pos.z) * 2.0 + time * 5.0) * 0.005;
-    let ripple4 = cos((world_pos.x - world_pos.z) * 2.2 + time * 4.5) * 0.005;
+    let ripple_scale = 1.0 + noise2 * 0.3;
+    let ripple1 = cos(world_pos.x * 2.8 * ripple_scale + time * 4.2) * 0.01;
+    let ripple2 = cos(world_pos.z * 3.1 * ripple_scale + time * 3.8) * 0.009;
+    let ripple3 = cos((world_pos.x + world_pos.z) * 1.9 + time * 5.2) * 0.007;
+    let ripple4 = cos((world_pos.x - world_pos.z) * 2.3 + time * 4.7) * 0.007;
     
     // Sum all derivatives for X and Z
-    // Diagonal waves contribute equally to both X and Z
-    let dx = wave1_dx + diag1 + diag2 + angle1 * 0.866 + angle2 * 0.5 + angle3 * 0.866 + ripple1 + ripple3 + ripple4;
-    let dz = wave2_dz + diag1 - diag2 + angle1 * 0.5 + angle2 * 0.866 - angle3 * 0.5 + ripple2 + ripple3 - ripple4;
+    // Diagonal waves contribute to both X and Z based on their direction
+    let dx = wave1_dx + diag1 * 0.7 + diag2 * 0.7 + angle1 * 0.866 + angle2 * 0.5 + angle3 * 0.866 + ripple1 + ripple3 + ripple4;
+    let dz = wave2_dz + diag1 * 0.7 - diag2 * 0.7 + angle1 * 0.5 + angle2 * 0.866 - angle3 * 0.5 + ripple2 + ripple3 - ripple4;
     
     // Normal from tangent plane: n = normalize((-dx, 1, -dz))
     return normalize(vec3<f32>(-dx, 1.0, -dz));
@@ -475,10 +477,8 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     let tex_color = textureSample(texture_atlas, texture_sampler, in.uv, i32(in.tex_index + 0.5)).rgb;
     var base_water = tex_color;
     
-    // Procedural shimmer/sparkle effect
-    let shimmer1 = sin(in.world_pos.x * 2.0 + uniforms.time * 3.0) * 0.5 + 0.5;
-    let shimmer2 = sin(in.world_pos.z * 2.5 + uniforms.time * 2.5) * 0.5 + 0.5;
-    let shimmer = shimmer1 * shimmer2 * 0.15;
+    // Higher-frequency ripple normal for specular/sparkle
+    let spark_normal = calculate_water_normal(in.world_pos * 2.0, uniforms.time * 1.5);
     
     // Calculate perturbed normal for realistic ripple reflections
     let perturbed_normal = calculate_water_normal(in.world_pos, uniforms.time);
@@ -491,7 +491,11 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     
     // Fresnel effect: water is more reflective when viewed at a grazing angle
     let view_dir = normalize(uniforms.camera_pos - in.world_pos);  // surface to camera
-    let fresnel = pow(1.0 - max(dot(view_dir, water_normal), 0.0), 3.0);
+    // Fresnel effect (Schlick's approximation): 
+    // Water has a base reflectance of ~0.02 when viewed top-down.
+    let cos_theta = max(dot(view_dir, water_normal), 0.0);
+    let r0 = 0.02;
+    let fresnel = r0 + (1.0 - r0) * pow(1.0 - cos_theta, 5.0);
 
     let sun_dir = normalize(uniforms.sun_position);
     
@@ -502,7 +506,10 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     
     // Reflection direction for SSR and sky (reflect(-view_dir, N))
     let fragment_view_dir = normalize(in.world_pos - uniforms.camera_pos);  // camera to surface
-    let reflect_dir_ssr = reflect(fragment_view_dir, water_normal);
+    // Stabilize reflection vector: ensure it points upwards to avoid horizon flickering
+    var reflect_dir_ssr = reflect(fragment_view_dir, water_normal);
+    reflect_dir_ssr.y = max(reflect_dir_ssr.y, 0.001);
+    reflect_dir_ssr = normalize(reflect_dir_ssr);
     
     // Calculate sky color based on reflection direction
     let sky_color = calculate_sky_color(reflect_dir_ssr, sun_dir);
@@ -551,15 +558,29 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     
     // Mix base (refracted) color with reflected color based on Fresnel
     // Reduce fresnel multiplier for more stable appearance during camera movement
-    var water_color = mix(base_water, reflection_color, fresnel * 0.45);
-    water_color += vec3<f32>(shimmer * shadow * day_factor);
+    // Mix base (refracted) color with reflected color based on Fresnel
+    // Using full Fresnel for physically accurate reflection transition
+    var water_color = mix(base_water, reflection_color, fresnel);
+    
+    // Natural glitter/sparkle based on high-frequency normal variation
+    let glitter = pow(max(dot(water_normal, spark_normal), 0.0), 32.0) * 0.2;
+    water_color += vec3<f32>(glitter * shadow * day_factor);
     
     // Solar specular highlights (sun glisten)
     if sun_dir.y > 0.0 {
-        let spec_normal = normalize(mix(in.normal, water_normal, 0.2)); // Subtle perturbation
+        // Use a mix of normals for more interesting highlights:
+        // - base normal for stable reflection
+        // - perturbed normal for wave-shaped highlights
+        // - spark normal for tiny sparkles
+        let spec_normal = normalize(mix(in.normal, water_normal, 0.5));
         let sun_reflect = reflect(-sun_dir, spec_normal);
-        let spec = pow(max(dot(view_dir, sun_reflect), 0.0), 64.0);
-        water_color += vec3<f32>(1.0, 0.95, 0.8) * spec * 1.0 * shadow * day_factor;
+        let spec_main = pow(max(dot(view_dir, sun_reflect), 0.0), 128.0);
+        
+        // Sharp sparkles
+        let spark_reflect = reflect(-sun_dir, spark_normal);
+        let spec_spark = pow(max(dot(view_dir, spark_reflect), 0.0), 256.0);
+
+        water_color += vec3<f32>(1.0, 0.98, 0.9) * (spec_main + spec_spark * 0.8) * shadow * day_factor;
     }
     
     // Lunar specular highlights

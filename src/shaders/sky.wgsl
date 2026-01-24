@@ -81,7 +81,6 @@ fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
     
     // View altitude (how high we're looking)
     let view_altitude = view_dir.y;
-    let height_factor = clamp(view_altitude * 0.5 + 0.5, 0.0, 1.0);
     
     // Horizontal projection for azimuth alignment
     let view_horiz_raw = vec3<f32>(view_dir.x, 0.0, view_dir.z);
@@ -96,11 +95,14 @@ fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
     
     // Base sky gradients
     let day_zenith = vec3<f32>(0.25, 0.45, 0.85);
-    let day_horizon = vec3<f32>(0.65, 0.80, 0.95);
+    let day_horizon = vec3<f32>(0.65, 0.82, 0.98);
     let night_zenith = vec3<f32>(0.002, 0.002, 0.010);
     let night_horizon = vec3<f32>(0.015, 0.015, 0.030);
 
-    var sky = mix(day_horizon, day_zenith, height_factor) * day_factor;
+    let height_factor = clamp(view_altitude * 0.5 + 0.5, 0.0, 1.0);
+    let curved_height = pow(height_factor, 0.8);
+
+    var sky = mix(day_horizon, day_zenith, curved_height) * day_factor;
     sky += mix(night_horizon, night_zenith, height_factor) * night_factor;
     
     // --- SUNRISE / SUNSET ---

@@ -110,14 +110,15 @@ fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
     // 3D angle to sun
     let cos_angle_3d = dot(normalize(view_dir), normalize(sun_dir));
     
-    // --- BASE SKY COLORS ---
+    // --- BASE SKY COLORS (Unified) ---
     let zenith_day = vec3<f32>(0.25, 0.45, 0.85);
-    let horizon_day = vec3<f32>(0.6, 0.75, 0.95);
+    let horizon_day = vec3<f32>(0.65, 0.82, 0.98);
     let zenith_night = vec3<f32>(0.001, 0.001, 0.008);
-    let horizon_night = vec3<f32>(0.01, 0.01, 0.02);
+    let horizon_night = vec3<f32>(0.015, 0.015, 0.03);
 
     let height_factor = clamp(view_height * 0.5 + 0.5, 0.0, 1.0);
-    var sky_color = mix(horizon_day, zenith_day, height_factor) * day_factor;
+    let curved_height = pow(height_factor, 0.8);
+    var sky_color = mix(horizon_day, zenith_day, curved_height) * day_factor;
     sky_color += mix(horizon_night, zenith_night, height_factor) * night_factor;
     
     // --- LOCALIZED SUNSET/SUNRISE EFFECT ---
