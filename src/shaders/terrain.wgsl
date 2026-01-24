@@ -80,7 +80,6 @@ fn vs_shadow(model: VertexInput) -> @builtin(position) vec4<f32> {
 }
 
 const PI: f32 = 3.14159265359;
-const GOLDEN_ANGLE: f32 = 2.39996322972865332;
 const SHADOW_MAP_SIZE: f32 = 4096.0;
 const PCF_SAMPLES: i32 = 16;
 
@@ -191,10 +190,30 @@ fn interleaved_gradient_noise(frag_coord: vec2<f32>) -> f32 {
     return fract(magic.z * fract(dot(frag_coord, magic.xy)));
 }
 
-fn vogel_disk_sample(sample_index: i32, phi: f32) -> vec2<f32> {
-    let r = sqrt(f32(sample_index) + 0.5) / sqrt(f32(PCF_SAMPLES));
-    let theta = f32(sample_index) * GOLDEN_ANGLE + phi;
-    return vec2<f32>(r * cos(theta), r * sin(theta));
+fn get_poisson_sample(idx: i32, rotation: f32) -> vec2<f32> {
+    var p: vec2<f32>;
+    switch (idx) {
+        case 0: { p = vec2<f32>(-0.94201624, -0.39906216); }
+        case 1: { p = vec2<f32>(0.94558609, -0.76890725); }
+        case 2: { p = vec2<f32>(-0.094184101, -0.92938870); }
+        case 3: { p = vec2<f32>(0.34495938, 0.29387760); }
+        case 4: { p = vec2<f32>(-0.91588581, 0.45771432); }
+        case 5: { p = vec2<f32>(-0.81544232, -0.87912464); }
+        case 6: { p = vec2<f32>(-0.38277543, 0.27676845); }
+        case 7: { p = vec2<f32>(0.97484398, 0.75648379); }
+        case 8: { p = vec2<f32>(0.44323325, -0.97511554); }
+        case 9: { p = vec2<f32>(0.53742981, -0.47373420); }
+        case 10: { p = vec2<f32>(-0.65476012, -0.051473853); }
+        case 11: { p = vec2<f32>(0.18395645, 0.89721549); }
+        case 12: { p = vec2<f32>(-0.097153940, -0.006734560); }
+        case 13: { p = vec2<f32>(0.53472400, 0.73356543); }
+        case 14: { p = vec2<f32>(-0.45611231, -0.40212851); }
+        case 15: { p = vec2<f32>(-0.57321081, 0.65476012); }
+        default: { p = vec2<f32>(0.0, 0.0); }
+    }
+    let s = sin(rotation);
+    let c = cos(rotation);
+    return vec2<f32>(p.x * c - p.y * s, p.x * s + p.y * c);
 }
 
 /// Select cascade based on view-space depth
@@ -258,7 +277,7 @@ fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>,
     var shadow: f32 = 0.0;
 
     for (var i: i32 = 0; i < PCF_SAMPLES; i++) {
-        let offset = vogel_disk_sample(i, rotation_phi) * filter_radius;
+        let offset = get_poisson_sample(i, rotation_phi) * filter_radius;
         shadow += textureSampleCompare(
             shadow_map,
             shadow_sampler,
