@@ -120,9 +120,14 @@ pub struct IndirectManager {
     cull_pipeline: wgpu::ComputePipeline,
     cull_bind_group_layout: wgpu::BindGroupLayout,
     cull_bind_group: Option<wgpu::BindGroup>,
-
     // Culling uniforms buffer (frustum + count)
     cull_uniforms_buffer: wgpu::Buffer,
+
+    // Shadow cascade culling resources
+    shadow_visible_commands: Vec<wgpu::Buffer>,
+    shadow_visible_counts: Vec<wgpu::Buffer>,
+    shadow_bind_groups: Vec<wgpu::BindGroup>,
+    shadow_uniform_buffers: Vec<wgpu::Buffer>,
 }
 
 impl IndirectManager {
@@ -155,7 +160,9 @@ impl IndirectManager {
         let visible_draw_commands_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Visible Draw Commands Buffer"),
             size: (MAX_SUBCHUNKS * std::mem::size_of::<DrawIndexedIndirect>()) as u64,
-            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -283,6 +290,66 @@ impl IndirectManager {
             cull_bind_group_layout,
             cull_bind_group: None,
             cull_uniforms_buffer,
+            shadow_visible_commands: Vec::new(),
+            shadow_visible_counts: Vec::new(),
+            shadow_bind_groups: Vec::new(),
+            shadow_uniform_buffers: Vec::new(),
+        }
+    }
+
+    /// Initialize shadow culling resources (call once after creation)
+    pub fn init_shadow_resources(&mut self, device: &wgpu::Device) {
+        for i in 0..4 {
+            let visible_commands = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("Shadow Visible Draw Commands Buffer {}", i)),
+                size: (MAX_SUBCHUNKS * std::mem::size_of::<DrawIndexedIndirect>()) as u64,
+                usage: wgpu::BufferUsages::INDIRECT
+                    | wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            let visible_count = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("Shadow Visible Count Buffer {}", i)),
+                size: 4,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("Shadow Cull Uniforms Buffer {}", i)),
+                size: std::mem::size_of::<CullUniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(&format!("Shadow Cull Bind Group {}", i)),
+                layout: &self.cull_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.subchunk_meta_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: visible_commands.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: visible_count.as_entire_binding(),
+                    },
+                ],
+            });
+
+            self.shadow_visible_commands.push(visible_commands);
+            self.shadow_visible_counts.push(visible_count);
+            self.shadow_bind_groups.push(bind_group);
+            self.shadow_uniform_buffers.push(uniform_buffer);
         }
     }
 
@@ -568,12 +635,15 @@ impl IndirectManager {
         // Upload culling uniforms
         let uniforms = CullUniforms {
             frustum_planes: *frustum_planes,
-            subchunk_count: self.active_subchunk_count,
+            subchunk_count: MAX_SUBCHUNKS as u32,
             _padding: [0; 7],
         };
         queue.write_buffer(&self.cull_uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         if let Some(bind_group) = &self.cull_bind_group {
+            // Zero out indices/instance counts of the visible buffer to prevent ghosts
+            encoder.clear_buffer(&self.visible_draw_commands_buffer, 0, None);
+
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Culling Pass"),
                 timestamp_writes: None,
@@ -581,8 +651,8 @@ impl IndirectManager {
             cpass.set_pipeline(&self.cull_pipeline);
             cpass.set_bind_group(0, bind_group, &[]);
 
-            // Dispatch enough workgroups for all subchunks (64 threads per group)
-            let workgroup_count = (self.active_subchunk_count + 63) / 64;
+            // Dispatch workgroups for all possible slots
+            let workgroup_count = (MAX_SUBCHUNKS as u32 + 63) / 64;
             cpass.dispatch_workgroups(workgroup_count, 1, 1);
         }
     }
@@ -602,9 +672,59 @@ impl IndirectManager {
         &self.visible_draw_commands_buffer
     }
 
+    /// Get visible draw commands buffer for a specific shadow cascade
+    pub fn shadow_draw_commands(&self, cascade_idx: usize) -> &wgpu::Buffer {
+        &self.shadow_visible_commands[cascade_idx]
+    }
+
     /// Get number of active subchunks (upper bound for draw count)
     pub fn active_count(&self) -> u32 {
         self.active_subchunk_count
+    }
+
+    /// Dispatch GPU culling for a specific shadow cascade
+    pub fn dispatch_shadow_culling(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+        cascade_idx: usize,
+        frustum_planes: &[[f32; 4]; 6],
+    ) {
+        if self.active_subchunk_count == 0 || cascade_idx >= self.shadow_bind_groups.len() {
+            return;
+        }
+
+        // Reset visible count to 0
+        queue.write_buffer(
+            &self.shadow_visible_counts[cascade_idx],
+            0,
+            &0u32.to_le_bytes(),
+        );
+
+        // Upload culling uniforms
+        let uniforms = CullUniforms {
+            frustum_planes: *frustum_planes,
+            subchunk_count: MAX_SUBCHUNKS as u32,
+            _padding: [0; 7],
+        };
+        queue.write_buffer(
+            &self.shadow_uniform_buffers[cascade_idx],
+            0,
+            bytemuck::bytes_of(&uniforms),
+        );
+
+        // Zero out visible commands buffer for this cascade
+        encoder.clear_buffer(&self.shadow_visible_commands[cascade_idx], 0, None);
+
+        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some(&format!("Shadow Culling Pass {}", cascade_idx)),
+            timestamp_writes: None,
+        });
+        cpass.set_pipeline(&self.cull_pipeline);
+        cpass.set_bind_group(0, &self.shadow_bind_groups[cascade_idx], &[]);
+
+        let workgroup_count = (MAX_SUBCHUNKS as u32 + 63) / 64;
+        cpass.dispatch_workgroups(workgroup_count, 1, 1);
     }
 
     /// Check if a subchunk is already uploaded

@@ -188,6 +188,7 @@ struct State {
     scene_color_view: wgpu::TextureView,
     // GPU Indirect Drawing
     indirect_manager: IndirectManager,
+    water_indirect_manager: IndirectManager,
 }
 
 impl State {
@@ -1879,8 +1880,13 @@ impl State {
 
         // ============== END SSAO INITIALIZATION ==============
 
-        // Create IndirectManager before Self (device is moved into Self)
-        let indirect_manager = IndirectManager::new(&device);
+        // Create IndirectManagers before Self (device is moved into Self)
+        let mut indirect_manager = IndirectManager::new(&device);
+        let mut water_indirect_manager = IndirectManager::new(&device);
+
+        // Initialize shadow culling resources
+        indirect_manager.init_shadow_resources(&device);
+        water_indirect_manager.init_shadow_resources(&device);
 
         Self {
             surface,
@@ -1996,6 +2002,7 @@ impl State {
             scene_color_view,
             // GPU Indirect Drawing
             indirect_manager,
+            water_indirect_manager,
         }
     }
 
@@ -2446,6 +2453,23 @@ impl State {
                 &aabb_copy,
             );
         }
+
+        // Upload water to its own IndirectManager
+        if !result.water.0.is_empty() && !result.water.1.is_empty() {
+            let key = render3d::render::indirect::SubchunkKey {
+                chunk_x: cx,
+                chunk_z: cz,
+                subchunk_y: sy,
+            };
+            self.water_indirect_manager.upload_subchunk(
+                &self.device,
+                &self.queue,
+                key,
+                &result.water.0,
+                &result.water.1,
+                &aabb_copy,
+            );
+        }
     }
 
     fn update(&mut self) {
@@ -2673,15 +2697,36 @@ impl State {
         // Render 4 cascades for shadows
         for i in 0..4 {
             let cascade_matrix: [[f32; 4]; 4] = csm.cascades[i].view_proj.into();
-            let mut shadow_uniform_data = [0f32; 64]; // Ensure enough space
-            // Macierz to 16 floatów
+            let mut shadow_uniform_data = [0f32; 64];
             shadow_uniform_data[0..16].copy_from_slice(cascade_matrix.as_flattened());
-            shadow_uniform_data[16] = time; // Czas po macierzy
+            shadow_uniform_data[16] = time;
 
             self.queue.write_buffer(
                 &self.shadow_cascade_buffer,
                 (i * 256) as u64,
                 bytemuck::cast_slice(&shadow_uniform_data),
+            );
+
+            // Select cascade view-proj matrix using dynamic uniform offset
+            let offset = (i * 256) as u32;
+
+            // Extract light frustum planes for this cascade to perform GPU culling
+            let cascade_view_proj = csm.cascades[i].view_proj;
+            let shadow_frustum = extract_frustum_planes(&cascade_view_proj);
+            let shadow_frustum_array = frustum_planes_to_array(&shadow_frustum);
+
+            // Dispatch GPU culling for this shadow cascade
+            self.indirect_manager.dispatch_shadow_culling(
+                &mut encoder,
+                &self.queue,
+                i,
+                &shadow_frustum_array,
+            );
+            self.water_indirect_manager.dispatch_shadow_culling(
+                &mut encoder,
+                &self.queue,
+                i,
+                &shadow_frustum_array,
             );
 
             let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2695,20 +2740,22 @@ impl State {
                     }),
                     stencil_ops: None,
                 }),
-                ..Default::default()
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             shadow_pass.set_pipeline(&self.shadow_pipeline);
-            let dynamic_offset = (i * 256) as u32;
-            shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[dynamic_offset]);
+            shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[offset]);
 
+            // 1. Draw Terrain (using GPU Indirect Drawing)
             shadow_pass.set_vertex_buffer(0, self.indirect_manager.vertex_buffer().slice(..));
             shadow_pass.set_index_buffer(
                 self.indirect_manager.index_buffer().slice(..),
                 wgpu::IndexFormat::Uint32,
             );
             shadow_pass.multi_draw_indexed_indirect(
-                self.indirect_manager.draw_commands(),
+                self.indirect_manager.shadow_draw_commands(i),
                 0,
                 self.indirect_manager.active_count(),
             );
@@ -2847,10 +2894,14 @@ impl State {
         self.subchunks_rendered = subchunks_rendered;
 
         // Dispatch GPU frustum culling for indirect drawing
-        // This populates visible_draw_commands buffer with draw calls for visible subchunks
         let frustum_planes_array = frustum_planes_to_array(&frustum_planes);
         self.indirect_manager
             .dispatch_culling(&mut encoder, &self.queue, &frustum_planes_array);
+        self.water_indirect_manager.dispatch_culling(
+            &mut encoder,
+            &self.queue,
+            &frustum_planes_array,
+        );
 
         // SSR Pass 1: Render Sky to SSR textures
         {
@@ -2927,6 +2978,10 @@ impl State {
                 0,
                 self.indirect_manager.active_count(),
             );
+
+            // Also draw water to SSR (it can be reflected too) - wait, water reflects other objects.
+            // Usually we don't draw water to SSR to avoid self-reflection issues,
+            // unless we handle it in the shader. Let's keep only terrain for now for stability.
         }
         // Main Scene Pass: Render Sky, Terrain, Water, and Objects
         // When SSAO is enabled, resolve to scene_color_view for post-processing
@@ -2987,14 +3042,19 @@ impl State {
                 self.indirect_manager.active_count(),
             );
 
-            // 3. Draw Water (Reflective)
+            // 3. Draw Water (using GPU Indirect Drawing)
             render_pass.set_pipeline(&self.water_pipeline);
             render_pass.set_bind_group(0, &self.water_bind_group, &[]);
-            for (vb, ib, num_indices, _) in &visible_water {
-                render_pass.set_vertex_buffer(0, vb.slice(..));
-                render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..*num_indices, 0, 0..1);
-            }
+            render_pass.set_vertex_buffer(0, self.water_indirect_manager.vertex_buffer().slice(..));
+            render_pass.set_index_buffer(
+                self.water_indirect_manager.index_buffer().slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            render_pass.multi_draw_indexed_indirect(
+                self.water_indirect_manager.draw_commands(),
+                0,
+                self.water_indirect_manager.active_count(),
+            );
 
             // 4. Draw Players
             if self.player_model_num_indices > 0 {

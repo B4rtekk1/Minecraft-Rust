@@ -1287,7 +1287,7 @@ impl World {
                         (&mut vertices, &mut indices)
                     };
 
-                    // Handle stairs with naive approach (complex geometry)
+                    // WoodStairs uses naive approach (complex geometry)
                     if block == BlockType::WoodStairs {
                         let x = world_x as f32;
                         let y_f = y as f32;
@@ -1459,113 +1459,6 @@ impl World {
                         }
                         continue;
                     }
-
-                    // Water uses naive approach (transparency requires per-block handling)
-                    if is_water {
-                        let neighbors = [
-                            get_block_fast(world_x - 1, y, world_z),
-                            get_block_fast(world_x + 1, y, world_z),
-                            get_block_fast(world_x, y - 1, world_z),
-                            get_block_fast(world_x, y + 1, world_z),
-                            get_block_fast(world_x, y, world_z - 1),
-                            get_block_fast(world_x, y, world_z + 1),
-                        ];
-
-                        for (i, neighbor) in neighbors.iter().enumerate() {
-                            if block.should_render_face_against(*neighbor) {
-                                let x = world_x as f32;
-                                let y_f = y as f32;
-                                let z = world_z as f32;
-                                let color = block.color();
-                                let tex = block.tex_top() as f32;
-                                let r = block.roughness();
-                                let m = block.metallic();
-
-                                match i {
-                                    0 => add_quad(
-                                        target_verts,
-                                        target_inds,
-                                        [x, y_f, z],
-                                        [x, y_f, z + 1.0],
-                                        [x, y_f + 1.0, z + 1.0],
-                                        [x, y_f + 1.0, z],
-                                        [-1.0, 0.0, 0.0],
-                                        color,
-                                        tex,
-                                        r,
-                                        m,
-                                    ),
-                                    1 => add_quad(
-                                        target_verts,
-                                        target_inds,
-                                        [x + 1.0, y_f, z + 1.0],
-                                        [x + 1.0, y_f, z],
-                                        [x + 1.0, y_f + 1.0, z],
-                                        [x + 1.0, y_f + 1.0, z + 1.0],
-                                        [1.0, 0.0, 0.0],
-                                        color,
-                                        tex,
-                                        r,
-                                        m,
-                                    ),
-                                    2 => add_quad(
-                                        target_verts,
-                                        target_inds,
-                                        [x, y_f, z + 1.0],
-                                        [x, y_f, z],
-                                        [x + 1.0, y_f, z],
-                                        [x + 1.0, y_f, z + 1.0],
-                                        [0.0, -1.0, 0.0],
-                                        color,
-                                        tex,
-                                        r,
-                                        m,
-                                    ),
-                                    3 => add_quad(
-                                        target_verts,
-                                        target_inds,
-                                        [x, y_f + 1.0, z],
-                                        [x, y_f + 1.0, z + 1.0],
-                                        [x + 1.0, y_f + 1.0, z + 1.0],
-                                        [x + 1.0, y_f + 1.0, z],
-                                        [0.0, 1.0, 0.0],
-                                        color,
-                                        tex,
-                                        r,
-                                        m,
-                                    ),
-                                    4 => add_quad(
-                                        target_verts,
-                                        target_inds,
-                                        [x + 1.0, y_f, z],
-                                        [x, y_f, z],
-                                        [x, y_f + 1.0, z],
-                                        [x + 1.0, y_f + 1.0, z],
-                                        [0.0, 0.0, -1.0],
-                                        color,
-                                        tex,
-                                        r,
-                                        m,
-                                    ),
-                                    5 => add_quad(
-                                        target_verts,
-                                        target_inds,
-                                        [x, y_f, z + 1.0],
-                                        [x + 1.0, y_f, z + 1.0],
-                                        [x + 1.0, y_f + 1.0, z + 1.0],
-                                        [x, y_f + 1.0, z + 1.0],
-                                        [0.0, 0.0, 1.0],
-                                        color,
-                                        tex,
-                                        r,
-                                        m,
-                                    ),
-                                    _ => {}
-                                }
-                            }
-                        }
-                        continue;
-                    }
                 }
             }
         }
@@ -1608,11 +1501,114 @@ impl World {
                         let world_z = base_z + lz;
                         let block = get_block_fast(world_x, y, world_z);
 
-                        // Skip air, water, and special blocks (handled above)
-                        if block == BlockType::Air
-                            || block == BlockType::Water
-                            || block == BlockType::WoodStairs
-                        {
+                        // Water uses naive approach even in the greedy pass to prevent gaps
+                        // caused by vertex displacement on large quads. We still draw it via IndirectManager.
+                        if block == BlockType::Water {
+                            let neighbors = [
+                                get_block_fast(world_x - 1, y, world_z),
+                                get_block_fast(world_x + 1, y, world_z),
+                                get_block_fast(world_x, y - 1, world_z),
+                                get_block_fast(world_x, y + 1, world_z),
+                                get_block_fast(world_x, y, world_z - 1),
+                                get_block_fast(world_x, y, world_z + 1),
+                            ];
+
+                            if block.should_render_face_against(neighbors[face_dir as usize]) {
+                                let x = world_x as f32;
+                                let y_f = y as f32;
+                                let z = world_z as f32;
+                                let color = block.color();
+                                let tex = block.tex_top() as f32;
+                                let r = block.roughness();
+                                let m = block.metallic();
+
+                                match face_dir {
+                                    0 => add_quad(
+                                        &mut water_vertices,
+                                        &mut water_indices,
+                                        [x, y_f, z],
+                                        [x, y_f, z + 1.0],
+                                        [x, y_f + 1.0, z + 1.0],
+                                        [x, y_f + 1.0, z],
+                                        [-1.0, 0.0, 0.0],
+                                        color,
+                                        tex,
+                                        r,
+                                        m,
+                                    ),
+                                    1 => add_quad(
+                                        &mut water_vertices,
+                                        &mut water_indices,
+                                        [x + 1.0, y_f, z + 1.0],
+                                        [x + 1.0, y_f, z],
+                                        [x + 1.0, y_f + 1.0, z],
+                                        [x + 1.0, y_f + 1.0, z + 1.0],
+                                        [1.0, 0.0, 0.0],
+                                        color,
+                                        tex,
+                                        r,
+                                        m,
+                                    ),
+                                    2 => add_quad(
+                                        &mut water_vertices,
+                                        &mut water_indices,
+                                        [x, y_f, z + 1.0],
+                                        [x, y_f, z],
+                                        [x + 1.0, y_f, z],
+                                        [x + 1.0, y_f, z + 1.0],
+                                        [0.0, -1.0, 0.0],
+                                        color,
+                                        tex,
+                                        r,
+                                        m,
+                                    ),
+                                    3 => add_quad(
+                                        &mut water_vertices,
+                                        &mut water_indices,
+                                        [x, y_f + 1.0, z],
+                                        [x, y_f + 1.0, z + 1.0],
+                                        [x + 1.0, y_f + 1.0, z + 1.0],
+                                        [x + 1.0, y_f + 1.0, z],
+                                        [0.0, 1.0, 0.0],
+                                        color,
+                                        tex,
+                                        r,
+                                        m,
+                                    ),
+                                    4 => add_quad(
+                                        &mut water_vertices,
+                                        &mut water_indices,
+                                        [x + 1.0, y_f, z],
+                                        [x, y_f, z],
+                                        [x, y_f + 1.0, z],
+                                        [x + 1.0, y_f + 1.0, z],
+                                        [0.0, 0.0, -1.0],
+                                        color,
+                                        tex,
+                                        r,
+                                        m,
+                                    ),
+                                    5 => add_quad(
+                                        &mut water_vertices,
+                                        &mut water_indices,
+                                        [x, y_f, z + 1.0],
+                                        [x + 1.0, y_f, z + 1.0],
+                                        [x + 1.0, y_f + 1.0, z + 1.0],
+                                        [x, y_f + 1.0, z + 1.0],
+                                        [0.0, 0.0, 1.0],
+                                        color,
+                                        tex,
+                                        r,
+                                        m,
+                                    ),
+                                    _ => {}
+                                }
+                            }
+                            continue;
+                        }
+
+                        // Skip air and other special blocks
+                        if block == BlockType::Air || block == BlockType::WoodStairs {
                             continue;
                         }
 
@@ -1725,15 +1721,18 @@ impl World {
                         }
 
                         // Emit the merged quad
-                        let block = face.block;
+                        let _block = face.block;
+                        // Water is no longer here, but we keep the target selection for safety/future use
+                        let (target_verts, target_inds) = (&mut vertices, &mut indices);
+
                         let color = [
                             face.color[0] as f32 / 255.0,
                             face.color[1] as f32 / 255.0,
                             face.color[2] as f32 / 255.0,
                         ];
                         let tex_index = face.tex_index as f32;
-                        let roughness = block.roughness();
-                        let metallic = block.metallic();
+                        let roughness = 1.0;
+                        let metallic = 0.0;
 
                         // Convert slice + d1/d2 + width/height to world coordinates
                         let (x0, y0, z0, x1, y1, z1) = match face_dir {
@@ -1797,8 +1796,8 @@ impl World {
                         // Emit quad with proper vertex order and tiled UVs
                         match face_dir {
                             0 => add_greedy_quad(
-                                &mut vertices,
-                                &mut indices,
+                                target_verts,
+                                target_inds,
                                 [x0, y0, z0],
                                 [x0, y0, z1],
                                 [x0, y1, z1],
@@ -1812,8 +1811,8 @@ impl World {
                                 height as f32,
                             ),
                             1 => add_greedy_quad(
-                                &mut vertices,
-                                &mut indices,
+                                target_verts,
+                                target_inds,
                                 [x1, y0, z1],
                                 [x1, y0, z0],
                                 [x1, y1, z0],
@@ -1827,8 +1826,8 @@ impl World {
                                 height as f32,
                             ),
                             2 => add_greedy_quad(
-                                &mut vertices,
-                                &mut indices,
+                                target_verts,
+                                target_inds,
                                 [x0, y0, z1],
                                 [x0, y0, z0],
                                 [x1, y0, z0],
@@ -1842,8 +1841,8 @@ impl World {
                                 height as f32,
                             ),
                             3 => add_greedy_quad(
-                                &mut vertices,
-                                &mut indices,
+                                target_verts,
+                                target_inds,
                                 [x0, y1, z0],
                                 [x0, y1, z1],
                                 [x1, y1, z1],
@@ -1857,8 +1856,8 @@ impl World {
                                 height as f32,
                             ),
                             4 => add_greedy_quad(
-                                &mut vertices,
-                                &mut indices,
+                                target_verts,
+                                target_inds,
                                 [x1, y0, z0],
                                 [x0, y0, z0],
                                 [x0, y1, z0],
@@ -1872,8 +1871,8 @@ impl World {
                                 width as f32,
                             ),
                             5 => add_greedy_quad(
-                                &mut vertices,
-                                &mut indices,
+                                target_verts,
+                                target_inds,
                                 [x0, y0, z1],
                                 [x1, y0, z1],
                                 [x1, y1, z1],

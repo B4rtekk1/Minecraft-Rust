@@ -179,7 +179,7 @@ fn vs_water(model: VertexInput) -> VertexOutput {
 
 const PI: f32 = 3.14159265359;
 const SHADOW_MAP_SIZE: f32 = 4096.0;
-const PCF_SAMPLES: i32 = 16;
+const PCF_SAMPLES: i32 = 8;
 const SSR_MAX_STEPS: i32 = 64;
 const SSR_MAX_DISTANCE: f32 = 60.0;
 const SSR_THICKNESS_BASE: f32 = 0.05;

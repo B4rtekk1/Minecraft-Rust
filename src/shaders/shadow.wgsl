@@ -29,6 +29,42 @@ struct VertexInput {
     @location(6) metallic: f32,
 };
 
+// Wave parameters shared between displacement and normal calculation
+struct WaveParams {
+    wavelength: f32,
+    amplitude: f32,
+    steepness: f32,
+    direction: vec2<f32>,
+    speed: f32,
+};
+
+fn get_wave(idx: i32) -> WaveParams {
+    switch (idx) {
+        case 0: { return WaveParams(12.0, 0.08, 0.15, vec2<f32>(1.0, 0.3), 0.5); }
+        case 1: { return WaveParams(8.0, 0.04, 0.12, vec2<f32>(0.7, 0.7), 0.4); }
+        case 2: { return WaveParams(5.0, 0.03, 0.1, vec2<f32>(-0.5, 0.8), 0.7); }
+        case 3: { return WaveParams(2.5, 0.015, 0.05, vec2<f32>(0.2, -0.9), 1.2); }
+        default: { return WaveParams(1.0, 0.0, 0.0, vec2<f32>(1.0, 0.0), 1.0); }
+    }
+}
+
+/// Calculate wave displacement for shadow pass (Y only)
+fn calculate_wave_y(pos: vec3<f32>, time: f32) -> f32 {
+    var y_offset: f32 = 0.0;
+    let p = pos.xz;
+    
+    // Use first 4 waves as in water shader
+    for (var i: i32 = 0; i < 4; i++) {
+        let w = get_wave(i);
+        let k = 2.0 * 3.14159265359 / w.wavelength;
+        let c = sqrt(9.8 / k) * w.speed;
+        let d = normalize(w.direction);
+        let f = k * (dot(d, p) - c * time);
+        y_offset += w.amplitude * sin(f);
+    }
+    return y_offset;
+}
+
 /// Shadow Vertex Shader
 ///
 /// Transforms the vertex position into the sun's coordinate space.
@@ -37,15 +73,9 @@ struct VertexInput {
 fn vs_shadow(model: VertexInput) -> @builtin(position) vec4<f32> {
     var pos = model.position;
     
-    // Wave displacement for top-facing faces (water surfaces) - Matches simpler pattern for stability
-    // Optimization: can be updated to Gerstner if needed, but for now we keep it consistent with shadow pass logic
+    // Wave displacement MUST match water shader exactly to prevent shadow acne
     if model.normal.y > 0.5 {
-        let wave1 = sin(pos.x * 0.4 + uniforms.time * 2.1) * 0.05;
-        let wave2 = sin(pos.z * 0.5 + uniforms.time * 1.8) * 0.04;
-        let wave3 = sin((pos.x + pos.z) * 0.25 + uniforms.time * 2.8) * 0.035;
-        let wave4 = sin((pos.x * 0.3 - pos.z * 0.4) + uniforms.time * 2.3) * 0.025;
-        pos.y += wave1 + wave2 + wave3 + wave4;
-
+        pos.y += calculate_wave_y(pos, uniforms.time);
         pos.y -= 0.15;
     }
 

@@ -81,7 +81,7 @@ fn vs_shadow(model: VertexInput) -> @builtin(position) vec4<f32> {
 
 const PI: f32 = 3.14159265359;
 const SHADOW_MAP_SIZE: f32 = 4096.0;
-const PCF_SAMPLES: i32 = 16;
+const PCF_SAMPLES: i32 = 8;
 
 /// Calculate sky color with localized sunrise/sunset gradient
 fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
