@@ -80,8 +80,9 @@ fn vs_shadow(model: VertexInput) -> @builtin(position) vec4<f32> {
 }
 
 const PI: f32 = 3.14159265359;
-const SHADOW_MAP_SIZE: f32 = 2048.0;
-const PCF_SAMPLES: i32 = 9;  // 3x3 grid for stable shadows
+const GOLDEN_ANGLE: f32 = 2.39996322972865332;
+const SHADOW_MAP_SIZE: f32 = 4096.0;
+const PCF_SAMPLES: i32 = 16;
 
 /// Calculate sky color with localized sunrise/sunset gradient
 fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
@@ -180,9 +181,20 @@ fn receiver_plane_depth_bias(shadow_uv: vec2<f32>, receiver_depth: f32) -> f32 {
     
     // Maximum bias based on filter radius
     let texel_size = 1.0 / SHADOW_MAP_SIZE;
-    let max_offset = texel_size * 1.5; // PCF filter radius
+    let max_offset = texel_size * 2.0;
 
     return max_offset * (abs(depth_gradient.x) + abs(depth_gradient.y));
+}
+
+fn interleaved_gradient_noise(frag_coord: vec2<f32>) -> f32 {
+    let magic = vec3<f32>(0.06711056, 0.00583715, 52.9829189);
+    return fract(magic.z * fract(dot(frag_coord, magic.xy)));
+}
+
+fn vogel_disk_sample(sample_index: i32, phi: f32) -> vec2<f32> {
+    let r = sqrt(f32(sample_index) + 0.5) / sqrt(f32(PCF_SAMPLES));
+    let theta = f32(sample_index) * GOLDEN_ANGLE + phi;
+    return vec2<f32>(r * cos(theta), r * sin(theta));
 }
 
 /// Select cascade based on view-space depth
@@ -199,9 +211,9 @@ fn select_cascade(view_depth: f32) -> i32 {
 
 
 
-/// Percentage Closer Filtering (PCF) shadow calculation with receiver-plane depth bias
-/// Uses 3x3 grid sampling for stable, artifact-free shadows
-fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>, view_depth: f32) -> f32 {
+/// Percentage Closer Filtering (PCF) shadow calculation with rotated Vogel disk
+/// Uses pseudo-random rotation per pixel to break up banding into high-frequency noise
+fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>, view_depth: f32, frag_coord: vec2<f32>) -> f32 {
     // Disable shadows if sun is below horizon
     if sun_dir.y < 0.05 {
         return 0.0;
@@ -232,28 +244,30 @@ fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>,
 
     let receiver_depth = shadow_coords.z;
     
-    // Simple slope-based bias (removed receiver-plane bias to simplify)
+    // Adaptive bias based on slope and distance
     let cos_theta = max(dot(normal, sun_dir), 0.0);
     let sin_theta = sqrt(1.0 - cos_theta * cos_theta);
-    let bias = 0.0008 + 0.002 * sin_theta / max(cos_theta, 0.1);
+    let bias = 0.001 + 0.002 * sin_theta / max(cos_theta, 0.1);
 
-    // 3x3 grid PCF for stable shadows
+    // Rotated Vogel disk PCF
     let texel_size = 1.0 / SHADOW_MAP_SIZE;
+    let noise = interleaved_gradient_noise(frag_coord);
+    let rotation_phi = noise * 2.0 * PI;
+    let filter_radius = 4.0 * texel_size;
+
     var shadow: f32 = 0.0;
 
-    for (var y: i32 = -1; y <= 1; y++) {
-        for (var x: i32 = -1; x <= 1; x++) {
-            let offset = vec2<f32>(f32(x), f32(y)) * texel_size;
-            shadow += textureSampleCompare(
-                shadow_map,
-                shadow_sampler,
-                uv + offset,
-                receiver_depth - bias
-            );
-        }
+    for (var i: i32 = 0; i < PCF_SAMPLES; i++) {
+        let offset = vogel_disk_sample(i, rotation_phi) * filter_radius;
+        shadow += textureSampleCompare(
+            shadow_map,
+            shadow_sampler,
+            uv + offset,
+            receiver_depth - bias
+        );
     }
 
-    shadow /= 9.0; // 3x3 = 9 samples
+    shadow /= f32(PCF_SAMPLES);
 
     // Apply edge fade - blend to fully lit at edges
     return mix(1.0, shadow, edge_fade);
@@ -291,7 +305,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Primary solar shadow
     var shadow = 1.0;
     if sun_dir.y > 0.0 {
-        shadow = calculate_shadow(in.world_pos, in.normal, sun_dir, in.view_depth);
+        shadow = calculate_shadow(in.world_pos, in.normal, sun_dir, in.view_depth, in.clip_position.xy);
     }
     
     // Ambient light - add twilight boost during sunrise/sunset

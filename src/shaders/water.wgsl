@@ -346,9 +346,9 @@ fn vogel_disk_sample(sample_index: i32, sample_count: i32, phi: f32) -> vec2<f32
     return vec2<f32>(r * cos(theta), r * sin(theta));
 }
 
-fn world_space_noise(world_pos: vec3<f32>) -> f32 {
-    let p = world_pos * 0.5;
-    return fract(sin(dot(floor(p.xz), vec2<f32>(12.9898, 78.233))) * 43758.5453);
+fn interleaved_gradient_noise(frag_coord: vec2<f32>) -> f32 {
+    let magic = vec3<f32>(0.06711056, 0.00583715, 52.9829189);
+    return fract(magic.z * fract(dot(frag_coord, magic.xy)));
 }
 
 /// Calculate perturbed water normal for realistic ripple reflections
@@ -388,7 +388,7 @@ fn calculate_water_normal(world_pos: vec3<f32>, time: f32) -> vec3<f32> {
     return normalize(vec3<f32>(-dx, 1.0, -dz));
 }
 
-fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>) -> f32 {
+fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>, frag_coord: vec2<f32>) -> f32 {
     if sun_dir.y < 0.05 {
         return 0.0;
     }
@@ -423,11 +423,11 @@ fn calculate_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>)
     let slope_bias = 0.001 * sin_theta / max(cos_theta, 0.1);
     let bias = base_bias + slope_bias;
 
-    let noise = world_space_noise(world_pos);
+    let noise = interleaved_gradient_noise(frag_coord);
     let rotation_angle = noise * 2.0 * PI;
 
     let texel_size = 1.0 / SHADOW_MAP_SIZE;
-    let filter_radius = 3.5 * texel_size;
+    let filter_radius = 4.0 * texel_size;
 
     var shadow: f32 = 0.0;
 
@@ -523,7 +523,7 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var shadow = 1.0;
     if sun_dir.y > 0.0 {
-        shadow = calculate_shadow(in.world_pos, in.normal, sun_dir);
+        shadow = calculate_shadow(in.world_pos, in.normal, sun_dir, in.clip_position.xy);
     }
 
     let ambient_day = 0.4;

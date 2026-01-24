@@ -1,0 +1,89 @@
+{
+    "blocks": {
+        "Grass": {
+            "top": 0,
+            "side": 1,
+            "bottom": 2
+        },
+        "Dirt": {
+            "all": 2
+        },
+        "Stone": {
+            "all": 3
+        },
+        "Sand": {
+            "all": 4
+        },
+        "Water": {
+            "all": 5
+        },
+        "Wood": {
+            "top": 7,
+            "side": 6,
+            "bottom": 7
+        },
+        "Leaves": {
+            "all": 8
+        },
+        "Bedrock": {
+            "all": 9
+        },
+        "Snow": {
+            "all": 10
+        },
+        "Gravel": {
+            "all": 11
+        },
+        "Clay": {
+            "all": 12
+        },
+        "Ice": {
+            "all": 13
+        },
+        "Cactus": {
+            "all": 14
+        },
+        "DeadBush": {
+            "all": 15
+        },
+        "WoodStairs": {
+            "parts": [
+                {
+                    "min": [
+                        0.0,
+                        0.0,
+                        0.0
+                    ],
+                    "max": [
+                        1.0,
+                        0.5,
+                        1.0
+                    ],
+                    "textures": {
+                        "top": 7,
+                        "bottom": 7,
+                        "side": 6
+                    }
+                },
+                {
+                    "min": [
+                        0.0,
+                        0.5,
+                        0.5
+                    ],
+                    "max": [
+                        1.0,
+                        1.0,
+                        1.0
+                    ],
+                    "textures": {
+                        "top": 7,
+                        "bottom": 7,
+                        "side": 6,
+                        "front": 6
+                    }
+                }
+            ]
+        }
+    }
+}
