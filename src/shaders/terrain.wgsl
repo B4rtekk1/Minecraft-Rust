@@ -7,6 +7,7 @@
 /// - Receiver-plane depth bias for accurate shadow edges on sloped surfaces
 /// - Time-of-day based lighting (ambient, solar diffuse, secondary fill light)
 /// - Biome-aware fog and atmospheric scattering
+/// 
 
 struct Uniforms {
     /// Projection * View matrix for the camera
@@ -80,7 +81,7 @@ fn vs_shadow(model: VertexInput) -> @builtin(position) vec4<f32> {
 }
 
 const PI: f32 = 3.14159265359;
-const SHADOW_MAP_SIZE: f32 = 4096.0;
+const SHADOW_MAP_SIZE: f32 = 2048.0;
 const PCF_SAMPLES: i32 = 8;
 
 /// Calculate sky color with localized sunrise/sunset gradient

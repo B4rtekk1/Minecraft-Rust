@@ -39,8 +39,8 @@ pub fn update_coords_ui(
 
     let text = format!("X:{:.0} Y:{:.0} Z:{:.0}", x, y, z);
 
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
+    let mut vertices = Vec::with_capacity(500);
+    let mut indices = Vec::with_capacity(250);
 
     let char_width = 0.018;
     let char_height = 0.032;

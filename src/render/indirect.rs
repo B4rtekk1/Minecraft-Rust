@@ -52,13 +52,18 @@ pub struct SubchunkGpuMeta {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct CullUniforms {
+    /// View-projection matrix for AABB projection
+    pub view_proj: [[f32; 4]; 4],
     /// 6 frustum planes (each is vec4: xyz=normal, w=distance)
     pub frustum_planes: [[f32; 4]; 6],
+    /// Camera position
+    pub camera_pos: [f32; 3],
     /// Number of active subchunks
     pub subchunk_count: u32,
-    /// Padding to match WGSL alignment (vec3<u32> is 16 bytes in WGSL)
-    /// Total size must be 128 bytes: 96 (planes) + 4 (count) + 28 (padding) = 128
-    pub _padding: [u32; 7],
+    /// Hi-Z texture size
+    pub hiz_size: [f32; 2],
+    /// Padding to match WGSL alignment
+    pub _padding: [f32; 2],
 }
 
 /// Key for identifying a subchunk
@@ -122,6 +127,9 @@ pub struct IndirectManager {
     cull_bind_group: Option<wgpu::BindGroup>,
     // Culling uniforms buffer (frustum + count)
     cull_uniforms_buffer: wgpu::Buffer,
+
+    // Hi-Z resources
+    hiz_sampler: wgpu::Sampler,
 
     // Shadow cascade culling resources
     shadow_visible_commands: Vec<wgpu::Buffer>,
@@ -253,6 +261,24 @@ impl IndirectManager {
                         },
                         count: None,
                     },
+                    // Hi-Z Texture (mip-mapped)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // Hi-Z Sampler
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        count: None,
+                    },
                 ],
             });
 
@@ -269,6 +295,16 @@ impl IndirectManager {
             entry_point: Some("main"),
             compilation_options: Default::default(),
             cache: None,
+        });
+
+        let hiz_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Hi-Z Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
         });
 
         Self {
@@ -290,11 +326,46 @@ impl IndirectManager {
             cull_bind_group_layout,
             cull_bind_group: None,
             cull_uniforms_buffer,
+            hiz_sampler,
             shadow_visible_commands: Vec::new(),
             shadow_visible_counts: Vec::new(),
             shadow_bind_groups: Vec::new(),
             shadow_uniform_buffers: Vec::new(),
         }
+    }
+
+    /// Recreate main bind group with Hi-Z support
+    pub fn update_bind_group(&mut self, device: &wgpu::Device, hiz_view: &wgpu::TextureView) {
+        self.cull_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Cull Bind Group"),
+            layout: &self.cull_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.cull_uniforms_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.subchunk_meta_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.visible_draw_commands_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.visible_count_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(hiz_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.hiz_sampler),
+                },
+            ],
+        }));
     }
 
     /// Initialize shadow culling resources (call once after creation)
@@ -343,6 +414,32 @@ impl IndirectManager {
                         binding: 3,
                         resource: visible_count.as_entire_binding(),
                     },
+                    // Dummy for shadows
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(
+                            &device
+                                .create_texture(&wgpu::TextureDescriptor {
+                                    label: Some("Dummy"),
+                                    size: wgpu::Extent3d {
+                                        width: 1,
+                                        height: 1,
+                                        depth_or_array_layers: 1,
+                                    },
+                                    mip_level_count: 1,
+                                    sample_count: 1,
+                                    dimension: wgpu::TextureDimension::D2,
+                                    format: wgpu::TextureFormat::R32Float,
+                                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                                    view_formats: &[],
+                                })
+                                .create_view(&wgpu::TextureViewDescriptor::default()),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&self.hiz_sampler),
+                    },
                 ],
             });
 
@@ -351,32 +448,6 @@ impl IndirectManager {
             self.shadow_bind_groups.push(bind_group);
             self.shadow_uniform_buffers.push(uniform_buffer);
         }
-    }
-
-    /// Recreate bind group (call after buffer changes)
-    fn recreate_bind_group(&mut self, device: &wgpu::Device) {
-        self.cull_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Cull Bind Group"),
-            layout: &self.cull_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.cull_uniforms_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.subchunk_meta_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.visible_draw_commands_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: self.visible_count_buffer.as_entire_binding(),
-                },
-            ],
-        }));
     }
 
     /// Upload a subchunk's mesh data to unified buffers
@@ -416,8 +487,8 @@ impl IndirectManager {
         let index_count = indices.len() as u32;
 
         // Try to find suitable free blocks first (best-fit strategy)
-        let vertex_alloc = self.find_free_block(&mut self.free_vertex_blocks.clone(), vertex_count);
-        let index_alloc = self.find_free_block(&mut self.free_index_blocks.clone(), index_count);
+        let vertex_alloc = Self::find_free_block(&self.free_vertex_blocks, vertex_count);
+        let index_alloc = Self::find_free_block(&self.free_index_blocks, index_count);
 
         let (vertex_offset, reused_vertex) = match vertex_alloc {
             Some((idx, block)) => {
@@ -527,11 +598,11 @@ impl IndirectManager {
         }
         self.allocations.insert(key, alloc);
         self.active_subchunk_count = self.allocations.len() as u32;
-
-        // Recreate bind group since metadata changed
-        self.recreate_bind_group(device);
-
         true
+    }
+
+    pub fn get_slot_index(&self, key: &SubchunkKey) -> Option<usize> {
+        self.allocations.get(key).map(|a| a.slot_index)
     }
 
     /// Remove a subchunk and reclaim its buffer space
@@ -571,8 +642,7 @@ impl IndirectManager {
 
     /// Find a free block that can fit the requested count (best-fit strategy)
     fn find_free_block(
-        &self,
-        blocks: &mut Vec<FreeBlock>,
+        blocks: &[FreeBlock],
         count: u32,
     ) -> Option<(usize, FreeBlock)> {
         // Best-fit: find smallest block that fits
@@ -618,12 +688,15 @@ impl IndirectManager {
         self.free_index_blocks.clear();
     }
 
-    /// Dispatch GPU culling compute shader
+    /// Dispatch GPU frustum and occlusion culling
     pub fn dispatch_culling(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
+        view_proj: &cgmath::Matrix4<f32>,
         frustum_planes: &[[f32; 4]; 6],
+        camera_pos: [f32; 3],
+        hiz_size: [f32; 2],
     ) {
         if self.active_subchunk_count == 0 {
             return;
@@ -634,9 +707,12 @@ impl IndirectManager {
 
         // Upload culling uniforms
         let uniforms = CullUniforms {
+            view_proj: (*view_proj).into(),
             frustum_planes: *frustum_planes,
+            camera_pos,
             subchunk_count: MAX_SUBCHUNKS as u32,
-            _padding: [0; 7],
+            hiz_size,
+            _padding: [0.0; 2],
         };
         queue.write_buffer(&self.cull_uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
 
@@ -703,9 +779,12 @@ impl IndirectManager {
 
         // Upload culling uniforms
         let uniforms = CullUniforms {
+            view_proj: [[0.0; 4]; 4], // Shadows use simple frustum culling for now
             frustum_planes: *frustum_planes,
+            camera_pos: [0.0, 0.0, 0.0],
             subchunk_count: MAX_SUBCHUNKS as u32,
-            _padding: [0; 7],
+            hiz_size: [0.0, 0.0],
+            _padding: [0.0; 2],
         };
         queue.write_buffer(
             &self.shadow_uniform_buffers[cascade_idx],

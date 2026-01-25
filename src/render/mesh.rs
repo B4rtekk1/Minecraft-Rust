@@ -136,8 +136,8 @@ pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
     let size_x = size / aspect;
     let thickness_x = thickness / aspect;
 
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
+    let mut vertices = Vec::with_capacity(24);
+    let mut indices = Vec::with_capacity(36);
 
     // Horizontal bar (corrected for aspect ratio)
     vertices.push(Vertex {
@@ -222,8 +222,8 @@ pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
 /// Build a simple Minecraft-style player model (head, body, arms, legs)
 /// Position (x, y, z) is at the player's feet, yaw is the horizontal rotation in radians
 pub fn build_player_model(x: f32, y: f32, z: f32, yaw: f32) -> (Vec<Vertex>, Vec<u32>) {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
+    let mut vertices = Vec::with_capacity(2000);
+    let mut indices = Vec::with_capacity(1000);
 
     let cos_yaw = yaw.cos();
     let sin_yaw = yaw.sin();

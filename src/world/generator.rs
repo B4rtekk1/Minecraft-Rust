@@ -82,15 +82,19 @@ impl ChunkGenerator {
         let base_z = cz * CHUNK_SIZE;
 
         // Pre-compute biome and height maps using FastNoiseLite
+        // Fused loop for better cache locality: compute both in single pass
         let mut biome_map = [[Biome::Plains; CHUNK_SIZE as usize]; CHUNK_SIZE as usize];
         let mut height_map = [[0i32; CHUNK_SIZE as usize]; CHUNK_SIZE as usize];
 
         for lx in 0..CHUNK_SIZE {
             for lz in 0..CHUNK_SIZE {
+                let lx_usize = lx as usize;
+                let lz_usize = lz as usize;
                 let world_x = base_x + lx;
                 let world_z = base_z + lz;
-                biome_map[lx as usize][lz as usize] = self.get_biome(world_x, world_z);
-                height_map[lx as usize][lz as usize] = self.get_terrain_height(world_x, world_z);
+                // Compute both biome and height in same cache line iteration
+                biome_map[lx_usize][lz_usize] = self.get_biome(world_x, world_z);
+                height_map[lx_usize][lz_usize] = self.get_terrain_height(world_x, world_z);
             }
         }
 
@@ -320,12 +324,12 @@ impl ChunkGenerator {
             }
             Biome::Mountains => {
                 let peaks = self.noise_terrain.get_noise_2d(fx + 1000.0, fz + 1000.0) as f64;
-                let mountain_height = (terrain + 1.0) * 0.5 * 70.0;
+                let mountain_height = (terrain + 1.0) * 0.5 * 40.0;
                 let peak_factor = (peaks + 1.0) * 0.5;
                 let cliff_noise = self.noise_detail.get_noise_2d(fx * 0.03, fz * 0.03) as f64;
                 85.0 + mountain_height * (0.5 + peak_factor * 0.5)
-                    + cliff_noise * 8.0
-                    + detail * 6.0
+                    + cliff_noise * 4.0
+                    + detail * 4.0
             }
             Biome::Swamp => {
                 // Lumpy swamp terrain

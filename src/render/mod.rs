@@ -7,6 +7,8 @@ pub mod mesh;
 pub mod mesh_loader;
 pub mod texture;
 
+pub mod atlas_map;
+
 // Re-export commonly used types
 pub use frustum::{AABB, extract_frustum_planes};
 pub use indirect::{DrawIndexedIndirect, IndirectManager, SubchunkKey};

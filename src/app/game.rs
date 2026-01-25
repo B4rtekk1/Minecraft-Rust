@@ -19,6 +19,8 @@ use winit::{
 use crate::multiplayer;
 use crate::ui;
 
+use crate::app::texture_cache;
+
 use clap::Parser;
 use multiplayer::network::{connect_to_server, update_network};
 use multiplayer::player::{RemotePlayer, queue_remote_players_labels};
@@ -27,8 +29,6 @@ use multiplayer::tcp::{TcpClient, TcpServer};
 use std::collections::HashMap;
 // use tokio::sync::mpsc;
 use ui::menu::{GameState, MenuField, MenuState};
-
-/// Mini Minecraft 3D Game
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -189,6 +189,13 @@ struct State {
     // GPU Indirect Drawing
     indirect_manager: IndirectManager,
     water_indirect_manager: IndirectManager,
+    // Hi-Z Occlusion Culling
+    hiz_texture: wgpu::Texture,
+    hiz_view: wgpu::TextureView,
+    hiz_mips: Vec<wgpu::TextureView>,
+    hiz_pipeline: wgpu::ComputePipeline,
+    hiz_bind_groups: Vec<wgpu::BindGroup>,
+    hiz_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl State {
@@ -258,11 +265,22 @@ impl State {
         surface.configure(&device, &config);
 
         // MSAA sample count (4x MSAA for quality anti-aliasing)
+        // Note: Depth32Float only supports [1, 4] samples on most devices
         let msaa_sample_count: u32 = 4;
 
         let depth_texture = Self::create_depth_texture(&device, &config, msaa_sample_count);
         let msaa_texture_view =
             Self::create_msaa_texture(&device, &config, surface_format, msaa_sample_count);
+
+        let hiz_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Hi-Z Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/hiz.wgsl").into()),
+        });
+
+        let cull_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Cull Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/cull.wgsl").into()),
+        });
 
         let terrain_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Terrain Shader"),
@@ -331,141 +349,8 @@ impl State {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
 
-        let (atlas_data, atlas_width, atlas_height) =
-            match load_texture_atlas_from_file("assets/textures.png") {
-                Ok((data, width, height)) => {
-                    tracing::info!("Loaded texture atlas from PNG: {}x{}", width, height);
-                    (data, width, height)
-                }
-                Err(e) => {
-                    tracing::error!("Failed to load assets/textures.png: {}", e);
-                    match load_texture_atlas_from_file("assets/textures.jpg") {
-                        Ok((data, width, height)) => {
-                            tracing::info!("Loaded texture atlas from JPG: {}x{}", width, height);
-                            (data, width, height)
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to load assets/textures.jpg: {}", e);
-                            match load_texture_atlas_from_file("textures.png") {
-                                Ok((data, width, height)) => {
-                                    println!(
-                                        "Loaded texture atlas from textures.png: {}x{}",
-                                        width, height
-                                    );
-                                    (data, width, height)
-                                }
-                                Err(e) => {
-                                    eprintln!("Failed to load textures.png: {}", e);
-                                    match load_texture_atlas_from_file("textures.jpg") {
-                                        Ok((data, width, height)) => {
-                                            println!(
-                                                "Loaded texture atlas from textures.jpg: {}x{}",
-                                                width, height
-                                            );
-                                            (data, width, height)
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Failed to load textures.jpg: {}", e);
-                                            tracing::warn!(
-                                                "Using procedural texture atlas generation."
-                                            );
-                                            let data = generate_texture_atlas();
-                                            (data, TEXTURE_SIZE, TEXTURE_SIZE)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            };
-
-        let mip_level_count = (atlas_width.max(atlas_height) as f32).log2().floor() as u32 + 1;
-
-        let texture_atlas = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Texture Array"),
-            size: wgpu::Extent3d {
-                width: atlas_width,
-                height: atlas_height,
-                depth_or_array_layers: 16,
-            },
-            mip_level_count,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture_atlas,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &atlas_data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * atlas_width),
-                rows_per_image: Some(atlas_height),
-            },
-            wgpu::Extent3d {
-                width: atlas_width,
-                height: atlas_height,
-                depth_or_array_layers: 16,
-            },
-        );
-
-        for level in 1..mip_level_count {
-            let m_width = (atlas_width >> level).max(1);
-            let m_height = (atlas_height >> level).max(1);
-            let mut level_data = Vec::with_capacity((m_width * m_height * 4 * 16) as usize);
-
-            for layer in 0..16 {
-                let layer_size = (atlas_width * atlas_height * 4) as usize;
-                let layer_offset = layer * layer_size;
-                let layer_pixels = &atlas_data[layer_offset..layer_offset + layer_size];
-
-                let img =
-                    image::RgbaImage::from_raw(atlas_width, atlas_height, layer_pixels.to_vec())
-                        .expect("Failed to create image from raw atlas data");
-
-                let resized = image::imageops::resize(
-                    &img,
-                    m_width,
-                    m_height,
-                    image::imageops::FilterType::Triangle,
-                );
-                level_data.extend_from_slice(&resized.into_raw());
-            }
-
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture_atlas,
-                    mip_level: level,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &level_data,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(4 * m_width),
-                    rows_per_image: Some(m_height),
-                },
-                wgpu::Extent3d {
-                    width: m_width,
-                    height: m_height,
-                    depth_or_array_layers: 16,
-                },
-            );
-        }
-
-        let texture_view = texture_atlas.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("Texture Array View"),
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
+        let (texture_atlas, texture_view, _atlas_width, _atlas_height) =
+            texture_cache::load_or_generate_atlas(&device, &queue);
 
         let texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Texture Sampler"),
@@ -479,7 +364,7 @@ impl State {
             ..Default::default()
         });
 
-        let shadow_map_size = 4096;
+        let shadow_map_size = 2048;
         let shadow_map_desc = wgpu::TextureDescriptor {
             label: Some("Shadow Map"),
             size: wgpu::Extent3d {
@@ -1888,6 +1773,102 @@ impl State {
         indirect_manager.init_shadow_resources(&device);
         water_indirect_manager.init_shadow_resources(&device);
 
+        // Hi-Z Initialization
+        let hiz_size = 1024u32; // Power of two for easy mips
+        let hiz_mips_count = (hiz_size as f32).log2().floor() as u32 + 1;
+        let hiz_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Hi-Z Texture"),
+            size: wgpu::Extent3d {
+                width: hiz_size,
+                height: hiz_size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: hiz_mips_count,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let hiz_view = hiz_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let hiz_mips = (0..hiz_mips_count)
+            .map(|i| {
+                hiz_texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some(&format!("Hi-Z Mip View {}", i)),
+                    base_mip_level: i,
+                    mip_level_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let hiz_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Hi-Z Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::R32Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let hiz_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Hi-Z Pipeline"),
+            layout: Some(
+                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Hi-Z Pipeline Layout"),
+                    bind_group_layouts: &[&hiz_bind_group_layout],
+                    immediate_size: 0,
+                }),
+            ),
+            module: &hiz_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        let hiz_bind_groups = (0..hiz_mips_count - 1)
+            .map(|i| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(&format!("Hi-Z Bind Group {}", i)),
+                    layout: &hiz_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&hiz_mips[i as usize]),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(
+                                &hiz_mips[(i + 1) as usize],
+                            ),
+                        },
+                    ],
+                })
+            })
+            .collect::<Vec<_>>();
+
+        // Initial bind group update
+        indirect_manager.update_bind_group(&device, &hiz_view);
+        water_indirect_manager.update_bind_group(&device, &hiz_view);
+
         Self {
             surface,
             device,
@@ -2003,6 +1984,12 @@ impl State {
             // GPU Indirect Drawing
             indirect_manager,
             water_indirect_manager,
+            hiz_texture,
+            hiz_view,
+            hiz_mips,
+            hiz_pipeline,
+            hiz_bind_groups,
+            hiz_bind_group_layout,
         }
     }
 
@@ -2324,8 +2311,6 @@ impl State {
 
     fn update_subchunk_mesh(&mut self, result: render3d::mesh_loader::MeshResult) {
         // Capture data needed for IndirectManager before acquiring world lock
-        let terrain_vertices = result.terrain.0.clone();
-        let terrain_indices = result.terrain.1.clone();
         let cx = result.cx;
         let cz = result.cz;
         let sy = result.sy;
@@ -2438,7 +2423,7 @@ impl State {
         } // world lock released here
 
         // IndirectManager upload re-enabled
-        if !terrain_vertices.is_empty() && !terrain_indices.is_empty() {
+        if !result.terrain.0.is_empty() && !result.terrain.1.is_empty() {
             let key = render3d::render::indirect::SubchunkKey {
                 chunk_x: cx,
                 chunk_z: cz,
@@ -2448,8 +2433,8 @@ impl State {
                 &self.device,
                 &self.queue,
                 key,
-                &terrain_vertices,
-                &terrain_indices,
+                &result.terrain.0,
+                &result.terrain.1,
                 &aabb_copy,
             );
         }
@@ -2569,8 +2554,8 @@ impl State {
 
         // 1. Build remote player meshes before starting render pass
         if !self.remote_players.is_empty() && self.game_state != GameState::Menu {
-            let mut all_vertices = Vec::new();
-            let mut all_indices = Vec::new();
+            let mut all_vertices = Vec::with_capacity(self.remote_players.len() * 16);
+            let mut all_indices = Vec::with_capacity(self.remote_players.len() * 24);
 
             for (_id, player) in &self.remote_players {
                 let (vertices, indices) =
@@ -2821,61 +2806,21 @@ impl State {
             + night_sky.2 * night_factor)
             .min(1.0);
 
-        // Collect visible water (still needs CPU culling since it doesn't use indirect drawing)
-        let mut visible_water: Vec<(wgpu::Buffer, wgpu::Buffer, u32, f32)> = Vec::new();
-
-        let cam_pos = cgmath::Vector3::new(
-            self.camera.position.x,
-            self.camera.position.y,
-            self.camera.position.z,
-        );
-
         {
             let world = self.world.read();
             for cx in (player_cx - RENDER_DISTANCE)..=(player_cx + RENDER_DISTANCE) {
                 for cz in (player_cz - RENDER_DISTANCE)..=(player_cz + RENDER_DISTANCE) {
                     if let Some(chunk) = world.chunks.get(&(cx, cz)) {
                         let mut chunk_has_visible = false;
-                        for (subchunk_idx, subchunk) in chunk.subchunks.iter().enumerate() {
+                        for subchunk in chunk.subchunks.iter() {
                             if subchunk.is_empty {
                                 continue;
                             }
 
-                            // Count rendered subchunks (GPU culling handles actual visibility for terrain)
-                            if subchunk.num_indices > 0 {
+                            // Count active subchunks (submitted to GPU culling)
+                            if subchunk.num_indices > 0 || subchunk.num_water_indices > 0 {
                                 subchunks_rendered += 1;
                                 chunk_has_visible = true;
-                            }
-
-                            // Water still needs CPU culling since it doesn't use indirect drawing
-                            if subchunk.num_water_indices > 0 {
-                                // Apply visibility culling only for water
-                                if !subchunk.aabb.is_visible(&frustum_planes) {
-                                    continue;
-                                }
-                                if world.is_subchunk_occluded(cx, cz, subchunk_idx as i32) {
-                                    continue;
-                                }
-
-                                // Calculate subchunk center for distance sorting
-                                let center_x = (subchunk.aabb.min.x + subchunk.aabb.max.x) * 0.5;
-                                let center_y = (subchunk.aabb.min.y + subchunk.aabb.max.y) * 0.5;
-                                let center_z = (subchunk.aabb.min.z + subchunk.aabb.max.z) * 0.5;
-                                let dx = center_x - cam_pos.x;
-                                let dy = center_y - cam_pos.y;
-                                let dz = center_z - cam_pos.z;
-                                let dist_sq = dx * dx + dy * dy + dz * dz;
-
-                                if let (Some(vb), Some(ib)) =
-                                    (&subchunk.water_vertex_buffer, &subchunk.water_index_buffer)
-                                {
-                                    visible_water.push((
-                                        vb.clone(),
-                                        ib.clone(),
-                                        subchunk.num_water_indices,
-                                        dist_sq,
-                                    ));
-                                }
                             }
                         }
                         if chunk_has_visible {
@@ -2886,21 +2831,44 @@ impl State {
             }
         }
 
-        // Sort water back-to-front for correct alpha blending
-        visible_water
-            .sort_unstable_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
-
         self.chunks_rendered = chunks_rendered;
         self.subchunks_rendered = subchunks_rendered;
 
-        // Dispatch GPU frustum culling for indirect drawing
+        // Generate Hi-Z Pyramid (Depth Pyramid) for Occlusion Culling
+        {
+            let mut hiz_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Hi-Z Generation Pass"),
+                timestamp_writes: None,
+            });
+            hiz_pass.set_pipeline(&self.hiz_pipeline);
+
+            // Loop through mip levels
+            for i in 0..self.hiz_bind_groups.len() {
+                hiz_pass.set_bind_group(0, &self.hiz_bind_groups[i], &[]);
+                let mip_size = (1024u32 >> (i + 1)).max(1);
+                let wg_count = (mip_size + 15) / 16;
+                hiz_pass.dispatch_workgroups(wg_count, wg_count, 1);
+            }
+        }
+
+        // Dispatch GPU frustum and occlusion culling for indirect drawing
         let frustum_planes_array = frustum_planes_to_array(&frustum_planes);
-        self.indirect_manager
-            .dispatch_culling(&mut encoder, &self.queue, &frustum_planes_array);
+
+        self.indirect_manager.dispatch_culling(
+            &mut encoder,
+            &self.queue,
+            &view_proj,
+            &frustum_planes_array,
+            self.camera.position.into(),
+            [1024.0, 1024.0], // Hi-Z size
+        );
         self.water_indirect_manager.dispatch_culling(
             &mut encoder,
             &self.queue,
+            &view_proj,
             &frustum_planes_array,
+            self.camera.position.into(),
+            [1024.0, 1024.0],
         );
 
         // SSR Pass 1: Render Sky to SSR textures
@@ -3396,7 +3364,7 @@ impl State {
             };
 
             // 2. Now create TextAreas (immutable borrow of self)
-            let mut text_areas = Vec::new();
+            let mut text_areas = Vec::with_capacity(4);
 
             text_areas.push(TextArea {
                 buffer: &self.fps_buffer,

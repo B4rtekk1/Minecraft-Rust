@@ -21,12 +21,18 @@ struct DrawIndexedIndirect {
 }
 
 struct CullUniforms {
+    /// View-projection matrix for AABB projection
+    view_proj: mat4x4<f32>,
     /// 6 frustum planes (each is vec4: xyz=normal, w=distance)
     frustum_planes: array<vec4<f32>, 6>,
+    /// Camera position
+    camera_pos: vec3<f32>,
     /// Number of active subchunks
     subchunk_count: u32,
+    /// Hi-Z texture size
+    hiz_size: vec2<f32>,
     /// Padding
-    _padding: vec3<u32>,
+    _padding: vec2<f32>,
 }
 
 /// Culling uniforms
@@ -44,6 +50,14 @@ var<storage, read_write> draw_commands: array<DrawIndexedIndirect>;
 /// Atomic counter for visible subchunks
 @group(0) @binding(3)
 var<storage, read_write> visible_count: atomic<u32>;
+
+/// Hi-Z Depth Pyramid (Read-only texture with mips)
+@group(0) @binding(4)
+var hiz_texture: texture_2d<f32>;
+
+/// Hi-Z Sampler
+@group(0) @binding(5)
+var hiz_sampler: sampler;
 
 /// Test if an AABB is visible against a frustum plane
 fn aabb_vs_plane(aabb_min: vec3<f32>, aabb_max: vec3<f32>, plane: vec4<f32>) -> bool {
@@ -74,6 +88,124 @@ fn is_visible(aabb_min: vec3<f32>, aabb_max: vec3<f32>) -> bool {
     return true;
 }
 
+/// Project world space position to NDC depth [0, 1]
+fn project_z(pos: vec3<f32>) -> f32 {
+    let clip = cull_uniforms.view_proj * vec4<f32>(pos, 1.0);
+    return clip.z / clip.w;
+}
+
+/// Test if an AABB is occluded by the Hi-Z pyramid
+/// Returns true if visible, false if occluded
+/// Test if an AABB is occluded by the Hi-Z pyramid
+/// Returns true if visible, false if occluded
+fn is_occlusion_visible(aabb_min: vec3<f32>, aabb_max: vec3<f32>) -> bool {
+    var min_uv = vec2<f32>(1.0, 1.0);
+    var max_uv = vec2<f32>(0.0, 0.0);
+    var min_z = 1.0;
+    var max_z = 0.0;
+
+    // Unroll the 8 corners manually
+    // Corner 0: min, min, min
+    var clip = cull_uniforms.view_proj * vec4<f32>(aabb_min.x, aabb_min.y, aabb_min.z, 1.0);
+    if clip.w <= 0.0 { return true; }
+    var ndc = clip.xyz / clip.w;
+    var uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+    min_uv = min(min_uv, uv);
+    max_uv = max(max_uv, uv);
+    min_z = min(min_z, ndc.z);
+    max_z = max(max_z, ndc.z);
+
+    // Corner 1: max, min, min
+    clip = cull_uniforms.view_proj * vec4<f32>(aabb_max.x, aabb_min.y, aabb_min.z, 1.0);
+    if clip.w <= 0.0 { return true; }
+    ndc = clip.xyz / clip.w;
+    uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+    min_uv = min(min_uv, uv);
+    max_uv = max(max_uv, uv);
+    min_z = min(min_z, ndc.z);
+    max_z = max(max_z, ndc.z);
+
+    // Corner 2: min, max, min
+    clip = cull_uniforms.view_proj * vec4<f32>(aabb_min.x, aabb_max.y, aabb_min.z, 1.0);
+    if clip.w <= 0.0 { return true; }
+    ndc = clip.xyz / clip.w;
+    uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+    min_uv = min(min_uv, uv);
+    max_uv = max(max_uv, uv);
+    min_z = min(min_z, ndc.z);
+    max_z = max(max_z, ndc.z);
+
+    // Corner 3: max, max, min
+    clip = cull_uniforms.view_proj * vec4<f32>(aabb_max.x, aabb_max.y, aabb_min.z, 1.0);
+    if clip.w <= 0.0 { return true; }
+    ndc = clip.xyz / clip.w;
+    uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+    min_uv = min(min_uv, uv);
+    max_uv = max(max_uv, uv);
+    min_z = min(min_z, ndc.z);
+    max_z = max(max_z, ndc.z);
+
+    // Corner 4: min, min, max
+    clip = cull_uniforms.view_proj * vec4<f32>(aabb_min.x, aabb_min.y, aabb_max.z, 1.0);
+    if clip.w <= 0.0 { return true; }
+    ndc = clip.xyz / clip.w;
+    uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+    min_uv = min(min_uv, uv);
+    max_uv = max(max_uv, uv);
+    min_z = min(min_z, ndc.z);
+    max_z = max(max_z, ndc.z);
+
+    // Corner 5: max, min, max
+    clip = cull_uniforms.view_proj * vec4<f32>(aabb_max.x, aabb_min.y, aabb_max.z, 1.0);
+    if clip.w <= 0.0 { return true; }
+    ndc = clip.xyz / clip.w;
+    uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+    min_uv = min(min_uv, uv);
+    max_uv = max(max_uv, uv);
+    min_z = min(min_z, ndc.z);
+    max_z = max(max_z, ndc.z);
+
+    // Corner 6: min, max, max
+    clip = cull_uniforms.view_proj * vec4<f32>(aabb_min.x, aabb_max.y, aabb_max.z, 1.0);
+    if clip.w <= 0.0 { return true; }
+    ndc = clip.xyz / clip.w;
+    uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+    min_uv = min(min_uv, uv);
+    max_uv = max(max_uv, uv);
+    min_z = min(min_z, ndc.z);
+    max_z = max(max_z, ndc.z);
+
+    // Corner 7: max, max, max
+    clip = cull_uniforms.view_proj * vec4<f32>(aabb_max.x, aabb_max.y, aabb_max.z, 1.0);
+    if clip.w <= 0.0 { return true; }
+    ndc = clip.xyz / clip.w;
+    uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+    min_uv = min(min_uv, uv);
+    max_uv = max(max_uv, uv);
+    min_z = min(min_z, ndc.z);
+    max_z = max(max_z, ndc.z);
+
+    // Clamp UVs to screen
+    min_uv = clamp(min_uv, vec2<f32>(0.0), vec2<f32>(1.0));
+    max_uv = clamp(max_uv, vec2<f32>(0.0), vec2<f32>(1.0));
+
+    // Calculate required mip level based on screen-space rectangle size
+    let size = (max_uv - min_uv) * cull_uniforms.hiz_size;
+    let max_dim = max(size.x, size.y);
+    let mip = u32(log2(max_dim));
+
+    // Sample four points in the Hi-Z buffer to be conservative
+    let d0 = textureSampleLevel(hiz_texture, hiz_sampler, min_uv, f32(mip)).r;
+    let d1 = textureSampleLevel(hiz_texture, hiz_sampler, max_uv, f32(mip)).r;
+    let d2 = textureSampleLevel(hiz_texture, hiz_sampler, vec2<f32>(min_uv.x, max_uv.y), f32(mip)).r;
+    let d3 = textureSampleLevel(hiz_texture, hiz_sampler, vec2<f32>(max_uv.x, min_uv.y), f32(mip)).r;
+
+    let hiz_min_z = min(min(d0, d1), min(d2, d3));
+    
+    // Visible if max_z (nearest point) >= hiz_min_z (furthest point in scene)
+    return max_z >= hiz_min_z;
+}
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let idx = global_id.x;
@@ -93,16 +225,20 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let aabb_min = subchunk.aabb_min.xyz;
     let aabb_max = subchunk.aabb_max.xyz;
     
-    // Frustum test
+    // Frustum test first (cheap)
     if is_visible(aabb_min, aabb_max) {
-        // Atomically get slot in output array
-        let slot = atomicAdd(&visible_count, 1u);
-        
-        // Write draw command
-        draw_commands[slot].index_count = subchunk.draw_data.x;
-        draw_commands[slot].instance_count = 1u;
-        draw_commands[slot].first_index = subchunk.draw_data.y;
-        draw_commands[slot].base_vertex = i32(subchunk.draw_data.z);
-        draw_commands[slot].first_instance = 0u;
+        // Occlusion test (only for main pass, not shadow)
+        // Note: shadow pass should skip this or pass identity Hi-Z
+        if is_occlusion_visible(aabb_min, aabb_max) {
+            // Atomically get slot in output array
+            let slot = atomicAdd(&visible_count, 1u);
+            
+            // Write draw command
+            draw_commands[slot].index_count = subchunk.draw_data.x;
+            draw_commands[slot].instance_count = 1u;
+            draw_commands[slot].first_index = subchunk.draw_data.y;
+            draw_commands[slot].base_vertex = i32(subchunk.draw_data.z);
+            draw_commands[slot].first_instance = 0u;
+        }
     }
 }

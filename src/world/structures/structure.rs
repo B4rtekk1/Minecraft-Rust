@@ -15,7 +15,7 @@ impl Structure {
     pub fn new(name: &str, biomes: Vec<&str>) -> Self {
         Self {
             name: name.to_string(),
-            biomes: biomes.into_iter().map(|s| s.to_string()).collect(),
+            biomes: biomes.into_iter().map(|s| s.to_owned()).collect(),
             min_height: None,
             max_height: None,
             in_water: false,
