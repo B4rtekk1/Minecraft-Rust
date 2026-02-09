@@ -110,7 +110,6 @@ pub fn create_texture_atlas_optimized(
         view_formats: &[],
     });
 
-    // CRITICAL: Generate mipmaps ONCE, not every frame!
     tracing::info!("Generating texture mipmaps (one-time operation)...");
     let mip_levels = generate_texture_atlas_with_mipmaps(atlas_data, atlas_width, atlas_height);
 
@@ -151,11 +150,6 @@ pub fn create_texture_atlas_optimized(
     (texture, view)
 }
 
-// ============================================================================
-// UŻYCIE W STATE::NEW - ZAMIEŃ STARY KOD NA TEN:
-// ============================================================================
-
-/// Load or generate texture atlas with caching
 pub fn load_or_generate_atlas(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -167,8 +161,6 @@ pub fn load_or_generate_atlas(
         tracing::info!("Loading texture atlas from cache...");
         match cache.load() {
             Some(cached_data) => {
-                // Deserialize cached data (simplified - you'd need proper serialization)
-                // For now, just try loading original atlas
                 match load_texture_atlas_from_file("assets/textures.png") {
                     Ok((data, width, height)) => (data, width, height),
                     Err(_) => {
@@ -207,36 +199,6 @@ pub fn load_or_generate_atlas(
     (texture, view, atlas_width, atlas_height)
 }
 
-// ============================================================================
-// ZASTĄP W impl State::new() LINIJKI 236-340 TYM KODEM:
-// ============================================================================
-
-/*
-// STARY KOD (DO USUNIĘCIA):
-let (atlas_data, atlas_width, atlas_height) = match load_texture_atlas_from_file(...) {
-    // ... 100+ linijek generowania mipmap CO KLATKĘ (!!!)
-};
-
-// NOWY KOD (WKLEJ TO):
-let (texture_atlas, texture_view, atlas_width, atlas_height) =
-    load_or_generate_atlas(&device, &queue);
-
-let texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-    label: Some("Texture Sampler"),
-    address_mode_u: wgpu::AddressMode::ClampToEdge,
-    address_mode_v: wgpu::AddressMode::ClampToEdge,
-    address_mode_w: wgpu::AddressMode::ClampToEdge,
-    mag_filter: wgpu::FilterMode::Nearest,
-    min_filter: wgpu::FilterMode::Nearest,
-    mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-    anisotropy_clamp: 1,
-    ..Default::default()
-});
-*/
-
-// ============================================================================
-// OPCJONALNIE: Async mipmap generation dla dużych atlasów
-// ============================================================================
 
 use parking_lot::RwLock;
 use std::sync::Arc;

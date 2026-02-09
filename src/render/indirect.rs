@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use crate::core::vertex::Vertex;
 use crate::render::frustum::AABB;
 
+use::std::collections::BTreeMap;
+
 /// Maximum number of subchunks that can be stored in unified buffers
 /// Maximum number of subchunks that can be stored in unified buffers
 const MAX_SUBCHUNKS: usize = 32768;
@@ -85,7 +87,7 @@ struct SubchunkAlloc {
 }
 
 /// A free block in the vertex or index buffer for memory reclamation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct FreeBlock {
     offset: u32,
     count: u32,
@@ -118,8 +120,7 @@ pub struct IndirectManager {
     free_slots: Vec<usize>,
 
     // Free-lists for memory reclamation
-    free_vertex_blocks: Vec<FreeBlock>,
-    free_index_blocks: Vec<FreeBlock>,
+    free_index_blocks: BTreeMap<u32, Vec<FreeBlock>>,
 
     // Compute pipeline for culling
     cull_pipeline: wgpu::ComputePipeline,
@@ -136,6 +137,9 @@ pub struct IndirectManager {
     shadow_visible_counts: Vec<wgpu::Buffer>,
     shadow_bind_groups: Vec<wgpu::BindGroup>,
     shadow_uniform_buffers: Vec<wgpu::Buffer>,
+
+    free_vertex_blocks: BTreeMap<u32, Vec<FreeBlock>>,
+    coalesce_counter: usize,
 }
 
 impl IndirectManager {
@@ -320,8 +324,8 @@ impl IndirectManager {
             next_index_offset: 0,
             active_subchunk_count: 0,
             free_slots: (0..MAX_SUBCHUNKS).rev().collect(),
-            free_vertex_blocks: Vec::new(),
-            free_index_blocks: Vec::new(),
+            free_vertex_blocks: BTreeMap::new(),
+            free_index_blocks: BTreeMap::new(),
             cull_pipeline,
             cull_bind_group_layout,
             cull_bind_group: None,
@@ -331,6 +335,7 @@ impl IndirectManager {
             shadow_visible_counts: Vec::new(),
             shadow_bind_groups: Vec::new(),
             shadow_uniform_buffers: Vec::new(),
+            coalesce_counter: 0,
         }
     }
 
@@ -465,13 +470,13 @@ impl IndirectManager {
         if let Some(old_alloc) = self.allocations.remove(&key) {
             // Reclaim space by adding to free-lists
             if old_alloc.vertex_count > 0 {
-                self.free_vertex_blocks.push(FreeBlock {
+                Self::add_free_block(&mut self.free_vertex_blocks, FreeBlock {
                     offset: old_alloc.vertex_offset,
                     count: old_alloc.vertex_count,
-                });
+                })
             }
             if old_alloc.index_count > 0 {
-                self.free_index_blocks.push(FreeBlock {
+                Self::add_free_block(&mut self.free_index_blocks, FreeBlock {
                     offset: old_alloc.index_offset,
                     count: old_alloc.index_count,
                 });
@@ -487,18 +492,17 @@ impl IndirectManager {
         let index_count = indices.len() as u32;
 
         // Try to find suitable free blocks first (best-fit strategy)
-        let vertex_alloc = Self::find_free_block(&self.free_vertex_blocks, vertex_count);
-        let index_alloc = Self::find_free_block(&self.free_index_blocks, index_count);
+        let vertex_alloc = Self::find_and_remove_free_block(&mut self.free_vertex_blocks, vertex_count);
+        let index_alloc = Self::find_and_remove_free_block(&mut self.free_index_blocks, index_count);
 
         let (vertex_offset, reused_vertex) = match vertex_alloc {
-            Some((idx, block)) => {
-                self.free_vertex_blocks.remove(idx);
+            Some(block) => {
                 // If block is larger, put remainder back
                 if block.count > vertex_count {
-                    self.free_vertex_blocks.push(FreeBlock {
+                    Self::add_free_block(&mut self.free_vertex_blocks, FreeBlock{
                         offset: block.offset + vertex_count,
                         count: block.count - vertex_count,
-                    });
+                    })
                 }
                 (block.offset, true)
             }
@@ -515,28 +519,34 @@ impl IndirectManager {
         };
 
         let (index_offset, reused_index) = match index_alloc {
-            Some((idx, block)) => {
-                self.free_index_blocks.remove(idx);
-                // If block is larger, put remainder back
-                if block.count > index_count {
-                    self.free_index_blocks.push(FreeBlock {
-                        offset: block.offset + index_count,
-                        count: block.count - index_count,
-                    });
-                }
-                (block.offset, true)
+    Some(block) => {
+        let size_key = block.count;
+        if let Some(vec) = self.free_index_blocks.get_mut(&size_key) {
+            if vec.is_empty() {
+                self.free_index_blocks.remove(&size_key);
             }
-            None => {
-                // Check if we have space to append
-                if self.next_index_offset + index_count > MAX_INDICES as u32 {
-                    println!("Unified index buffer full, clearing indirect draw cache...");
-                    self.clear_gpu_data(queue);
-                    (self.next_index_offset, false)
-                } else {
-                    (self.next_index_offset, false)
-                }
-            }
-        };
+        }
+
+        if block.count > index_count {
+            Self::add_free_block(&mut self.free_index_blocks, FreeBlock {
+                offset: block.offset + index_count,
+                count: block.count - index_count,
+            });
+        }
+
+        (block.offset, true)
+    }
+    None => {
+        if self.next_index_offset + index_count > MAX_INDICES as u32 {
+            println!("Unified index buffer full, clearing indirect draw cache...");
+            self.clear_gpu_data(queue);
+            (self.next_index_offset, false)
+        } else {
+            let offset = self.next_index_offset;
+            (offset, false)
+        }
+    }
+};
 
         let slot_index = match self.free_slots.pop() {
             Some(idx) => idx,
@@ -598,6 +608,7 @@ impl IndirectManager {
         }
         self.allocations.insert(key, alloc);
         self.active_subchunk_count = self.allocations.len() as u32;
+        self.maybe_coalesce();
         true
     }
 
@@ -624,47 +635,93 @@ impl IndirectManager {
 
             // Add freed memory to free-lists for reuse
             if alloc.vertex_count > 0 {
-                self.free_vertex_blocks.push(FreeBlock {
+                Self::add_free_block(&mut self.free_vertex_blocks, FreeBlock{
                     offset: alloc.vertex_offset,
                     count: alloc.vertex_count,
-                });
+                })
             }
             if alloc.index_count > 0 {
-                self.free_index_blocks.push(FreeBlock {
+                Self::add_free_block(&mut self.free_index_blocks, FreeBlock {
                     offset: alloc.index_offset,
                     count: alloc.index_count,
                 });
             }
 
             self.active_subchunk_count = self.allocations.len() as u32;
+            self.maybe_coalesce();
+        }
+    }
+
+    fn coalesce_vertex_blocks(blocks: &mut BTreeMap<u32, Vec<FreeBlock>>) {
+        // 1. Flatten all blocks into a single sorted vec
+        let mut all_blocks: Vec<FreeBlock> = blocks
+            .values()
+            .flat_map(|v| v.iter().cloned())
+            .collect();
+        
+        if all_blocks.len() < 2 {
+            return;
+        }
+        
+        // 2. Sort by offset
+        all_blocks.sort_by_key(|b| b.offset);
+        
+        // 3. Merge adjacent blocks
+        let mut merged = Vec::with_capacity(all_blocks.len());
+        let mut current = all_blocks[0];
+        
+        for block in all_blocks.into_iter().skip(1) {
+            if current.offset + current.count == block.offset {
+                // Adjacent - merge
+                current.count += block.count;
+            } else {
+                // Gap - save current and start new
+                merged.push(current);
+                current = block;
+            }
+        }
+        merged.push(current); // Don't forget last block
+        
+        // 4. Rebuild BTreeMap
+        blocks.clear();
+        for block in merged {
+            Self::add_free_block(blocks, block);
+        }
+    }
+    
+    /// Periodic coalescing trigger (call after adds/removes)
+    fn maybe_coalesce(&mut self) {
+        const COALESCE_THRESHOLD: usize = 50;
+        
+        self.coalesce_counter += 1;
+        if self.coalesce_counter >= COALESCE_THRESHOLD {
+            Self::coalesce_vertex_blocks(&mut self.free_vertex_blocks);
+            Self::coalesce_vertex_blocks(&mut self.free_index_blocks);
+            self.coalesce_counter = 0;
         }
     }
 
     /// Find a free block that can fit the requested count (best-fit strategy)
-    fn find_free_block(
-        blocks: &[FreeBlock],
+    fn find_and_remove_free_block(
+        blocks: &mut BTreeMap<u32, Vec<FreeBlock>>,
         count: u32,
-    ) -> Option<(usize, FreeBlock)> {
-        // Best-fit: find smallest block that fits
-        let mut best_idx = None;
-        let mut best_waste = u32::MAX;
-
-        for (idx, block) in blocks.iter().enumerate() {
-            if block.count >= count {
-                let waste = block.count - count;
-                if waste < best_waste {
-                    best_waste = waste;
-                    best_idx = Some(idx);
-                }
-            }
+    ) -> Option<FreeBlock> {
+        let size_key = blocks.range(count..).next().map(|(k, _)| *k)?;
+        let vec = blocks.get_mut(&size_key)?;
+        let block = vec.pop()?;
+        if vec.is_empty() {
+            blocks.remove(&size_key);
         }
+        Some(block)
+    }
 
-        best_idx.map(|idx| (idx, blocks[idx].clone()))
+    fn add_free_block(blocks: &mut BTreeMap<u32, Vec<FreeBlock>>, block: FreeBlock) {
+        blocks.entry(block.count).or_insert_with(Vec::new).push(block);
     }
 
     /// Reset vertex/index offsets and clear allocations
     fn clear_gpu_data(&mut self, queue: &wgpu::Queue) {
-        // Zero out the metadata for already uploaded subchunks to prevent ghosts
+        // Zero out metadata
         for alloc in self.allocations.values() {
             let subchunk_meta = SubchunkGpuMeta {
                 aabb_min: [0.0; 4],
@@ -684,54 +741,60 @@ impl IndirectManager {
         self.next_vertex_offset = 0;
         self.next_index_offset = 0;
         self.active_subchunk_count = 0;
-        self.free_vertex_blocks.clear();
+        self.free_vertex_blocks.clear(); // ← OK: BTreeMap ma .clear()
         self.free_index_blocks.clear();
     }
 
     /// Dispatch GPU frustum and occlusion culling
     pub fn dispatch_culling(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        queue: &wgpu::Queue,
-        view_proj: &cgmath::Matrix4<f32>,
-        frustum_planes: &[[f32; 4]; 6],
-        camera_pos: [f32; 3],
-        hiz_size: [f32; 2],
-    ) {
-        if self.active_subchunk_count == 0 {
-            return;
-        }
-
-        // Reset visible count to 0
-        queue.write_buffer(&self.visible_count_buffer, 0, &0u32.to_le_bytes());
-
-        // Upload culling uniforms
-        let uniforms = CullUniforms {
-            view_proj: (*view_proj).into(),
-            frustum_planes: *frustum_planes,
-            camera_pos,
-            subchunk_count: MAX_SUBCHUNKS as u32,
-            hiz_size,
-            _padding: [0.0; 2],
-        };
-        queue.write_buffer(&self.cull_uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
-
-        if let Some(bind_group) = &self.cull_bind_group {
-            // Zero out indices/instance counts of the visible buffer to prevent ghosts
-            encoder.clear_buffer(&self.visible_draw_commands_buffer, 0, None);
-
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Culling Pass"),
-                timestamp_writes: None,
-            });
-            cpass.set_pipeline(&self.cull_pipeline);
-            cpass.set_bind_group(0, bind_group, &[]);
-
-            // Dispatch workgroups for all possible slots
-            let workgroup_count = (MAX_SUBCHUNKS as u32 + 63) / 64;
-            cpass.dispatch_workgroups(workgroup_count, 1, 1);
-        }
+    &self,
+    encoder: &mut wgpu::CommandEncoder,
+    queue: &wgpu::Queue,
+    view_proj: &cgmath::Matrix4<f32>,
+    frustum_planes: &[[f32; 4]; 6],
+    camera_pos: [f32; 3],
+    hiz_size: [f32; 2],
+) {
+    if self.active_subchunk_count == 0 {
+        return;
     }
+
+    queue.write_buffer(&self.visible_count_buffer, 0, &0u32.to_le_bytes());
+
+    let uniforms = CullUniforms {
+        view_proj: (*view_proj).into(),
+        frustum_planes: *frustum_planes,
+        camera_pos,
+        subchunk_count: self.active_subchunk_count,
+        hiz_size,
+        _padding: [0.0; 2],
+    };
+    queue.write_buffer(&self.cull_uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
+
+    if let Some(bind_group) = &self.cull_bind_group {
+        let active_size = (self.active_subchunk_count as u64
+            * std::mem::size_of::<DrawIndexedIndirect>() as u64)
+            .next_multiple_of(4);
+        
+        if active_size > 0 {
+            encoder.clear_buffer(
+                &self.visible_draw_commands_buffer, 
+                0, 
+                Some(active_size)
+            );
+        }
+
+        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Culling Pass"),
+            timestamp_writes: None,
+        });
+        cpass.set_pipeline(&self.cull_pipeline);
+        cpass.set_bind_group(0, bind_group, &[]);
+
+        let workgroup_count = (MAX_SUBCHUNKS as u32 + 63) / 64;
+        cpass.dispatch_workgroups(workgroup_count, 1, 1);
+    }
+}
 
     /// Get unified vertex buffer for rendering
     pub fn vertex_buffer(&self) -> &wgpu::Buffer {
@@ -760,51 +823,58 @@ impl IndirectManager {
 
     /// Dispatch GPU culling for a specific shadow cascade
     pub fn dispatch_shadow_culling(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        queue: &wgpu::Queue,
-        cascade_idx: usize,
-        frustum_planes: &[[f32; 4]; 6],
-    ) {
-        if self.active_subchunk_count == 0 || cascade_idx >= self.shadow_bind_groups.len() {
-            return;
-        }
-
-        // Reset visible count to 0
-        queue.write_buffer(
-            &self.shadow_visible_counts[cascade_idx],
-            0,
-            &0u32.to_le_bytes(),
-        );
-
-        // Upload culling uniforms
-        let uniforms = CullUniforms {
-            view_proj: [[0.0; 4]; 4], // Shadows use simple frustum culling for now
-            frustum_planes: *frustum_planes,
-            camera_pos: [0.0, 0.0, 0.0],
-            subchunk_count: MAX_SUBCHUNKS as u32,
-            hiz_size: [0.0, 0.0],
-            _padding: [0.0; 2],
-        };
-        queue.write_buffer(
-            &self.shadow_uniform_buffers[cascade_idx],
-            0,
-            bytemuck::bytes_of(&uniforms),
-        );
-
-        // Zero out visible commands buffer for this cascade
-        encoder.clear_buffer(&self.shadow_visible_commands[cascade_idx], 0, None);
-
-        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some(&format!("Shadow Culling Pass {}", cascade_idx)),
-            timestamp_writes: None,
-        });
-        cpass.set_pipeline(&self.cull_pipeline);
-        cpass.set_bind_group(0, &self.shadow_bind_groups[cascade_idx], &[]);
-
-        let workgroup_count = (MAX_SUBCHUNKS as u32 + 63) / 64;
-        cpass.dispatch_workgroups(workgroup_count, 1, 1);
+    &self,
+    encoder: &mut wgpu::CommandEncoder,
+    queue: &wgpu::Queue,
+    cascade_idx: usize,
+    frustum_planes: &[[f32; 4]; 6],
+) {
+    if self.active_subchunk_count == 0 || cascade_idx >= self.shadow_bind_groups.len() {
+        return;
     }
+
+    queue.write_buffer(
+        &self.shadow_visible_counts[cascade_idx],
+        0,
+        &0u32.to_le_bytes(),
+    );
+
+    let uniforms = CullUniforms {
+        view_proj: [[0.0; 4]; 4],
+        frustum_planes: *frustum_planes,
+        camera_pos: [0.0, 0.0, 0.0],
+        subchunk_count: self.active_subchunk_count,
+        hiz_size: [0.0, 0.0],
+        _padding: [0.0; 2],
+    };
+    queue.write_buffer(
+        &self.shadow_uniform_buffers[cascade_idx],
+        0,
+        bytemuck::bytes_of(&uniforms),
+    );
+
+    let active_size = (self.active_subchunk_count as u64 
+        * std::mem::size_of::<DrawIndexedIndirect>() as u64)
+        .next_multiple_of(4);
+    
+    if active_size > 0 {
+        encoder.clear_buffer(
+            &self.shadow_visible_commands[cascade_idx], 
+            0, 
+            Some(active_size)
+        );
+    }
+
+    let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some(&format!("Shadow Culling Pass {}", cascade_idx)),
+        timestamp_writes: None,
+    });
+    cpass.set_pipeline(&self.cull_pipeline);
+    cpass.set_bind_group(0, &self.shadow_bind_groups[cascade_idx], &[]);
+
+    let workgroup_count = (MAX_SUBCHUNKS as u32 + 63) / 64;
+    cpass.dispatch_workgroups(workgroup_count, 1, 1);
+}
 
     /// Check if a subchunk is already uploaded
     pub fn has_subchunk(&self, key: &SubchunkKey) -> bool {
@@ -817,8 +887,9 @@ impl IndirectManager {
         self.next_vertex_offset = 0;
         self.next_index_offset = 0;
         self.active_subchunk_count = 0;
-        self.free_slots = (0..MAX_SUBCHUNKS).rev().collect();
-        self.free_vertex_blocks.clear();
+        self.free_slots.clear();
+        self.free_slots.extend((0..MAX_SUBCHUNKS).rev()); // ← Bonus: reuse Vec
+        self.free_vertex_blocks.clear(); // ← OK: BTreeMap ma .clear()
         self.free_index_blocks.clear();
     }
 }

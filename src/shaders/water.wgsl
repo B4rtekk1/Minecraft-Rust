@@ -194,7 +194,7 @@ struct GerstnerDualResult {
 fn calculate_gerstner_dual(pos: vec3<f32>, time: f32, camera_pos: vec3<f32>) -> GerstnerDualResult {
     let dist = length(pos.xz - camera_pos.xz);
     let lod_factor = 1.0 - clamp((dist - LOD_NEAR) / (LOD_FAR - LOD_NEAR), 0.0, 1.0);
-    let smooth_lod = lod_factor * lod_factor;
+    let smooth_lod = lod_factor * lod_factor * lod_factor;
 
     var result: GerstnerDualResult;
     result.displacement = vec3(0.0);
@@ -519,7 +519,7 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     let dist_to_camera = length(in.world_pos - uniforms.camera_pos);
     let normal_blend = clamp(1.0 - dist_to_camera / NORMAL_BLEND_DISTANCE, NORMAL_BLEND_MIN, 1.0);
     let water_normal = normalize(mix(in.normal, waves.normal, normal_blend));
-    
+
     // View direction and Fresnel
     let view_dir = normalize(uniforms.camera_pos - in.world_pos);
     let cos_theta = max(dot(view_dir, water_normal), 0.0);

@@ -3,7 +3,6 @@
 //! This module re-exports the main game components from a single large file.
 //! Future refactoring can split game.rs into smaller focused modules.
 
-mod cloud;
 mod game;
 mod texture_cache;
 pub use texture_cache::{

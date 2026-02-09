@@ -35,7 +35,7 @@ impl MeshLoader {
 
             thread::Builder::new()
                 .name(format!("mesh-worker-{}", i))
-                .spawn(move || {
+                .spawn(move || {    
                     while let Ok(req) = rx.recv() {
                         let meshes = {
                             let world_read = world.read();

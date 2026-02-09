@@ -51,7 +51,7 @@ use render3d::{
 };
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
-pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
+pub const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::new(
     1.0, 0.0, 0.0, 0.0,
     0.0, 1.0, 0.0, 0.0,
     0.0, 0.0, 0.5, 0.0,
@@ -76,13 +76,10 @@ struct State {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
-    reflection_render_pipeline: wgpu::RenderPipeline,
     water_pipeline: wgpu::RenderPipeline,
     sun_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
-    ssr_render_pipeline: wgpu::RenderPipeline,
-    ssr_sky_pipeline: wgpu::RenderPipeline,
     crosshair_pipeline: wgpu::RenderPipeline,
     sun_vertex_buffer: wgpu::Buffer,
     sun_index_buffer: wgpu::Buffer,
@@ -200,6 +197,19 @@ struct State {
     depth_resolve_bind_group: wgpu::BindGroup,
 }
 
+struct WorldSnapshot {
+    missing_chunks: Vec<(i32, i32, i32)>,
+    raycast_result: Option<(i32, i32, i32, i32, i32, i32)>,
+    target_block: Option<BlockType>,
+    eye_block: BlockType,
+}
+
+struct WorldWriteOps {
+    completed_chunks: Vec<(i32, i32, render3d::Chunk)>,
+    block_break: Option<(i32, i32, i32)>, // (x, y, z)
+    mark_dirty: Vec<(i32, i32, i32)>,
+}
+
 impl State {
     async fn new(window: Window) -> Self {
         let window = Arc::new(window);
@@ -277,11 +287,6 @@ impl State {
         let hiz_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Hi-Z Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/hiz.wgsl").into()),
-        });
-
-        let cull_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Cull Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/cull.wgsl").into()),
         });
 
         let terrain_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1284,7 +1289,6 @@ impl State {
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/composite.wgsl").into()),
         });
 
-        // Create resolved depth texture for SSAO (non-MSAA)
         let ssao_depth_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("SSAO Depth Texture"),
             size: wgpu::Extent3d {
@@ -1302,7 +1306,6 @@ impl State {
         let ssao_depth_view =
             ssao_depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // SSAO output texture (single channel grayscale)
         let ssao_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("SSAO Texture"),
             size: wgpu::Extent3d {
@@ -1319,7 +1322,6 @@ impl State {
         });
         let ssao_texture_view = ssao_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Blurred SSAO texture
         let ssao_blur_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("SSAO Blur Texture"),
             size: wgpu::Extent3d {
@@ -1336,7 +1338,6 @@ impl State {
         });
         let ssao_blur_view = ssao_blur_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Scene color texture (render scene here first, then composite with SSAO)
         let scene_color_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Scene Color Texture"),
             size: wgpu::Extent3d {
@@ -1354,11 +1355,9 @@ impl State {
         let scene_color_view =
             scene_color_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Generate SSAO sample kernel (64 samples in a hemisphere)
         let mut ssao_kernel: [[f32; 4]; 64] = [[0.0; 4]; 64];
         let mut rng_state: u32 = 12345;
         for i in 0..64 {
-            // Simple LCG random
             rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
             let r1 = (rng_state as f32) / (u32::MAX as f32);
             rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
@@ -1366,13 +1365,11 @@ impl State {
             rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
             let r3 = (rng_state as f32) / (u32::MAX as f32);
 
-            // Random direction in hemisphere (z always positive)
             let x = r1 * 2.0 - 1.0;
             let y = r2 * 2.0 - 1.0;
-            let z = r3; // Only positive Z for hemisphere
+            let z = r3;
             let len = (x * x + y * y + z * z).sqrt().max(0.001);
 
-            // Scale samples to be more densely packed near origin
             let scale = (i as f32) / 64.0;
             let scale = 0.1 + scale * scale * 0.9; // lerp(0.1, 1.0, scale^2)
 
@@ -1385,15 +1382,13 @@ impl State {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-        // SSAO noise texture (4x4 random rotations)
-        let mut noise_data: [u8; 64] = [0; 64]; // 4x4 RGBA
+        let mut noise_data: [u8; 64] = [0; 64];
         for i in 0..16 {
             rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
             let r1 = (rng_state as f32) / (u32::MAX as f32);
             rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
             let r2 = (rng_state as f32) / (u32::MAX as f32);
 
-            // Store as normalized [-1, 1] -> [0, 255]
             noise_data[i * 4] = ((r1 * 2.0 - 1.0) * 127.5 + 127.5) as u8;
             noise_data[i * 4 + 1] = ((r2 * 2.0 - 1.0) * 127.5 + 127.5) as u8;
             noise_data[i * 4 + 2] = 128; // Z = 0 (after denormalization)
@@ -1946,13 +1941,10 @@ impl State {
             queue,
             config,
             render_pipeline,
-            reflection_render_pipeline,
             water_pipeline,
             sun_pipeline,
             sky_pipeline,
             shadow_pipeline,
-            ssr_render_pipeline,
-            ssr_sky_pipeline,
             crosshair_pipeline,
             sun_vertex_buffer,
             sun_index_buffer,
@@ -2544,25 +2536,18 @@ impl State {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
-        self.camera.update(&*self.world.read(), dt, &self.input);
 
-        // Poll for completed async chunks
         let completed_chunks = self.chunk_loader.poll_results(MAX_CHUNKS_PER_FRAME);
-        if !completed_chunks.is_empty() {
-            let mut world = self.world.write();
-            for result in completed_chunks {
-                world.chunks.insert((result.cx, result.cz), result.chunk);
-            }
-        }
 
-        // Calculate player chunk position
         let player_cx = (self.camera.position.x / CHUNK_SIZE as f32).floor() as i32;
         let player_cz = (self.camera.position.z / CHUNK_SIZE as f32).floor() as i32;
 
-        // Request async generation for missing chunks (sorted by priority/distance)
-        let mut requests = Vec::new();
-        {
+        let snapshot = {
             let world = self.world.read();
+
+            self.camera.update(&*world, dt, &self.input);
+
+            let mut missing_chunks = Vec::with_capacity(64);
             for cx in (player_cx - GENERATION_DISTANCE)..=(player_cx + GENERATION_DISTANCE) {
                 for cz in (player_cz - GENERATION_DISTANCE)..=(player_cz + GENERATION_DISTANCE) {
                     if !world.chunks.contains_key(&(cx, cz))
@@ -2570,50 +2555,72 @@ impl State {
                     {
                         let dx = cx - player_cx;
                         let dz = cz - player_cz;
-                        let priority = dx * dx + dz * dz; // Distance squared
-                        requests.push((cx, cz, priority));
+                        let priority = dx * dx + dz * dz;
+                        missing_chunks.push((cx, cz, priority));
                     }
                 }
             }
-        }
 
-        // Send requests to chunk loader
+            let (raycast_result, target_block) = if self.mouse_captured && self.input.left_mouse {
+                let raycast = self.camera.raycast(&*world, 5.0);
+                if let Some((bx, by, bz, _, _, _)) = raycast {
+                    let block = world.get_block(bx, by, bz);
+                    (Some((bx, by, bz, 0, 0, 0)), Some(block))
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
+
+            let eye_pos = self.camera.eye_position();
+            let eye_block = world.get_block(
+                eye_pos.x.floor() as i32,
+                eye_pos.y.floor() as i32,
+                eye_pos.z.floor() as i32,
+            );
+
+            WorldSnapshot {
+                missing_chunks,
+                raycast_result,
+                target_block,
+                eye_block,
+            }
+        };
+
+        let mut requests = snapshot.missing_chunks;
         requests.sort_by_key(|&(_, _, priority)| priority);
         for (cx, cz, priority) in requests.into_iter().take(MAX_CHUNKS_PER_FRAME) {
             self.chunk_loader.request_chunk(cx, cz, priority);
         }
 
-        // Still run immediate sync chunk loading for spawn area and unloading
-        self.world
-            .write()
-            .update_chunks_around_player(self.camera.position.x, self.camera.position.z);
+        let mut write_ops = WorldWriteOps {
+            completed_chunks: completed_chunks.into_iter()
+                .map(|r| (r.cx, r.cz, r.chunk))
+                .collect(),
+            block_break: None,
+            mark_dirty: Vec::new(),
+        };
 
-        self.update_coords_ui();
-
-        if self.mouse_captured && self.input.left_mouse {
-            let raycast_result = {
-                let world = self.world.read();
-                self.camera.raycast(&*world, 5.0)
-            };
-            if let Some((bx, by, bz, _, _, _)) = raycast_result {
+        if let Some(target_block) = snapshot.target_block {
+            if let Some((bx, by, bz, _, _, _)) = snapshot.raycast_result {
                 let target = (bx, by, bz);
-                let mut world = self.world.write();
-                let block = world.get_block(bx, by, bz);
-                let break_time = block.break_time();
+                let break_time = target_block.break_time();
 
                 if break_time.is_finite() && break_time > 0.0 {
                     if self.digging.target == Some(target) {
                         self.digging.progress += dt;
                         if self.digging.progress >= break_time {
-                            world.set_block_player(bx, by, bz, BlockType::Air);
-                            drop(world); // Release borrow before calling mark_chunk_dirty
-                            self.mark_chunk_dirty(bx, by, bz);
+                            write_ops.block_break = Some((bx, by, bz));
+                            write_ops.mark_dirty.push((bx, by, bz));
                             self.digging.target = None;
                             self.digging.progress = 0.0;
                         }
                     } else {
                         self.digging.target = Some(target);
                         self.digging.progress = 0.0;
+                        // Zapisz break_time do DiggingState
+                        self.digging.break_time = break_time;
                     }
                 }
             }
@@ -2622,7 +2629,31 @@ impl State {
             self.digging.progress = 0.0;
         }
 
-        // Poll for completed async meshes
+        if !write_ops.completed_chunks.is_empty()
+            || write_ops.block_break.is_some()
+            || !write_ops.mark_dirty.is_empty()
+        {
+            let mut world = self.world.write();
+
+            for (cx, cz, chunk) in write_ops.completed_chunks {
+                world.chunks.insert((cx, cz), chunk);
+            }
+
+            if let Some((bx, by, bz)) = write_ops.block_break {
+                world.set_block_player(bx, by, bz, BlockType::Air);
+            }
+
+            world.update_chunks_around_player(
+                self.camera.position.x,
+                self.camera.position.z,
+            );
+        }
+        for (bx, by, bz) in write_ops.mark_dirty {
+            self.mark_chunk_dirty(bx, by, bz);
+        }
+
+        self.update_coords_ui();
+
         while let Some(result) = self.mesh_loader.poll_result() {
             self.update_subchunk_mesh(result);
         }
@@ -2715,9 +2746,6 @@ impl State {
             csm.cascades[2].split_distance,
             csm.cascades[3].split_distance,
         ];
-
-        // Use first cascade for shadow pass (covers near area with highest detail)
-        let sun_view_proj = csm.cascades[0].view_proj;
 
         let inv_view_proj = view_proj.invert().unwrap_or(Matrix4::identity());
         let inv_view_proj_array: [[f32; 4]; 4] = inv_view_proj.into();
@@ -3317,15 +3345,15 @@ impl State {
             let mut progress_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Progress Bar Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,          // tekstura swapchain (lub offscreen)
-                    resolve_target: None, // nie używamy multisamplingu
+                    view: &view,
+                    resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load, // ważne: nie czyść, zachowaj istniejący obraz
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None, // UI nie potrzebuje depth
+                depth_stencil_attachment: None,
                 ..Default::default()
             });
 
@@ -3548,8 +3576,6 @@ impl State {
     }
 
     fn render_menu(&mut self, _encoder: &mut wgpu::CommandEncoder, _view: &wgpu::TextureView) {
-        // Glyphon rendering is now handled centrally in render()
-        // using prepare_menu_text() helper.
     }
 
     fn connect_to_server(&mut self) {
@@ -3579,7 +3605,7 @@ impl State {
     }
     fn render_remote_players(
         &mut self,
-        _view_proj: &cgmath::Matrix4<f32>,
+        _view_proj: &Matrix4<f32>,
         _width: f32,
         _height: f32,
     ) {
@@ -3704,7 +3730,7 @@ impl State {
                 chunk.subchunks[(sy - 1) as usize].mesh_dirty = true;
             }
         }
-        if ly == SUBCHUNK_HEIGHT - 1 && sy < NUM_SUBCHUNKS as i32 - 1 {
+        if ly == SUBCHUNK_HEIGHT - 1 && sy < NUM_SUBCHUNKS - 1 {
             if let Some(chunk) = world.chunks.get_mut(&(cx, cz)) {
                 chunk.subchunks[(sy + 1) as usize].mesh_dirty = true;
             }
