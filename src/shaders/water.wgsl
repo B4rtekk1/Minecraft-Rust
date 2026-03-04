@@ -87,6 +87,8 @@ struct Uniforms {
     screen_size: vec2<f32>,
     water_level: f32,
     reflection_mode: f32,
+    moon_position: vec3<f32>,
+    _pad1_moon: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -597,9 +599,19 @@ fn ssr_trace(world_pos: vec3<f32>, reflect_dir: vec3<f32>) -> vec4<f32> {
                 let fs  = textureSample(ssr_depth, ssr_sampler, fu);
                 let fd  = abs(fn_.z - fs);
                 if fd < thickness {
-                    hit_uv = fu;
-                    hit_confidence = 1.0 - fd / thickness;
-                    found_hit = true;
+                    // Reject hits from geometry ABOVE water level when reflecting upward.
+                    // This prevents leaves/trees (seen through alpha-cutout transparency)
+                    // from creating false SSR reflections on the water surface.
+                    let hit_world = reconstruct_world_pos(fu, fs);
+                    let is_above_water = hit_world.y > uniforms.water_level + 0.5;
+                    let reflects_upward = dir.y > -0.05;
+                    if !(reflects_upward && is_above_water) {
+                        hit_uv = fu;
+                        hit_confidence = 1.0 - fd / thickness;
+                        found_hit = true;
+                    }
+                    // Whether we accepted or rejected, stop tracing (we hit something solid)
+                    break;
                 }
             }
             break;

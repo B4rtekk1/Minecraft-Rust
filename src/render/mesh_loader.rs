@@ -1,6 +1,7 @@
 use crate::core::vertex::Vertex;
 use crate::world::World;
 use crossbeam_channel::{Receiver, Sender, bounded};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::thread;
 
@@ -21,6 +22,7 @@ pub struct MeshResult {
 pub struct MeshLoader {
     request_tx: Sender<MeshRequest>,
     result_rx: Receiver<MeshResult>,
+    pending: HashSet<(i32, i32, i32)>,
 }
 
 impl MeshLoader {
@@ -62,14 +64,37 @@ impl MeshLoader {
         Self {
             request_tx,
             result_rx,
+            pending: HashSet::new(),
         }
     }
 
-    pub fn request_mesh(&self, cx: i32, cz: i32, sy: i32) {
-        let _ = self.request_tx.try_send(MeshRequest { cx, cz, sy });
+    pub fn request_mesh(&mut self, cx: i32, cz: i32, sy: i32) {
+        let key = (cx, cz, sy);
+        if self.pending.contains(&key) {
+            return; // Already queued, skip
+        }
+        match self.request_tx.try_send(MeshRequest { cx, cz, sy }) {
+            Ok(_) => {
+                self.pending.insert(key);
+            }
+            Err(_) => {
+                // Queue full – will retry next frame (mesh_dirty stays true)
+            }
+        }
     }
 
-    pub fn poll_result(&self) -> Option<MeshResult> {
-        self.result_rx.try_recv().ok()
+    pub fn poll_result(&mut self) -> Option<MeshResult> {
+        match self.result_rx.try_recv() {
+            Ok(result) => {
+                self.pending.remove(&(result.cx, result.cz, result.sy));
+                Some(result)
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Returns true if this subchunk is already queued for mesh building.
+    pub fn is_pending(&self, cx: i32, cz: i32, sy: i32) -> bool {
+        self.pending.contains(&(cx, cz, sy))
     }
 }

@@ -25,7 +25,7 @@ use clap::Parser;
 use multiplayer::network::{connect_to_server, update_network};
 use multiplayer::player::{RemotePlayer, queue_remote_players_labels};
 use multiplayer::protocol::Packet;
-use multiplayer::tcp::{TcpServer};
+use multiplayer::tcp::TcpServer;
 use std::collections::HashMap;
 // use tokio::sync::mpsc;
 use ui::menu::{GameState, MenuField, MenuState};
@@ -45,10 +45,9 @@ use render3d::chunk_loader::ChunkLoader;
 use render3d::render_core::csm::CsmManager;
 use render3d::{
     BlockType, CHUNK_SIZE, Camera, DEFAULT_FOV, DEFAULT_WORLD_FILE, DiggingState,
-    GENERATION_DISTANCE, IndirectManager, InputState, MAX_CHUNKS_PER_FRAME,
-    MAX_MESH_BUILDS_PER_FRAME, NUM_SUBCHUNKS, RENDER_DISTANCE, SUBCHUNK_HEIGHT, SavedWorld,
-    Uniforms, Vertex, World, build_crosshair, build_player_model, extract_frustum_planes,
-    load_world, save_world,
+    GENERATION_DISTANCE, IndirectManager, InputState, MAX_CHUNKS_PER_FRAME, NUM_SUBCHUNKS,
+    RENDER_DISTANCE, SUBCHUNK_HEIGHT, SavedWorld, Uniforms, Vertex, World, build_crosshair,
+    build_player_model, extract_frustum_planes, load_world, save_world,
 };
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -330,10 +329,11 @@ impl State {
                 screen_size: [1920.0, 1080.0],
                 water_level: 63.0,
                 reflection_mode: 1.0,
+                moon_position: [-0.4, 0.2, -0.3],
+                _pad1_moon: 0.0,
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-
 
         let (texture_atlas, texture_view, _atlas_width, _atlas_height) =
             texture_cache::load_or_generate_atlas(&device, &queue);
@@ -2533,6 +2533,11 @@ impl State {
         let sun_z = sun_angle.cos();
         let sun_dir = cgmath::Vector3::new(sun_x, sun_y, sun_z).normalize();
 
+        // Moon is always opposite to the sun on the same orbital plane
+        let moon_x = 0.0f32;
+        let moon_y = -sun_y;
+        let moon_z = -sun_z;
+
         // Use CsmManager to compute cascade matrices with texel snapping for stability
         let mut csm = CsmManager::new();
         let fov_y = DEFAULT_FOV;
@@ -2578,6 +2583,8 @@ impl State {
                 screen_size: [self.config.width as f32, self.config.height as f32],
                 water_level: 63.0,
                 reflection_mode: self.reflection_mode as f32,
+                moon_position: [moon_x, moon_y, moon_z],
+                _pad1_moon: 0.0,
             }]),
         );
 
@@ -2659,8 +2666,7 @@ impl State {
             );
         }
 
-        // Optimization: Pre-allocate since we limit to max_meshes_per_frame
-        let mut meshes_to_request: Vec<(i32, i32, i32)> = Vec::with_capacity(8);
+        let mut meshes_to_request: Vec<(i32, i32, i32)> = Vec::new();
         let mut chunks_rendered = 0u32;
         let mut subchunks_rendered = 0u32;
 
@@ -2675,8 +2681,10 @@ impl State {
                                 continue;
                             }
 
-                            // Collect dirty meshes
-                            if subchunk.mesh_dirty {
+                            // Collect dirty meshes that are not already pending
+                            if subchunk.mesh_dirty
+                                && !self.mesh_loader.is_pending(cx, cz, sy as i32)
+                            {
                                 meshes_to_request.push((cx, cz, sy as i32));
                             }
 
@@ -2694,27 +2702,17 @@ impl State {
             }
         }
 
-        let max_meshes_per_frame = MAX_MESH_BUILDS_PER_FRAME;
-        // Prioritize meshes closer to the player
+        // Prioritize meshes closer to the player, then submit all of them.
+        // MeshLoader's bounded channel naturally throttles the submission rate.
+        // mesh_dirty stays true until the build actually completes – nothing is silently lost.
         meshes_to_request.sort_by_key(|&(cx, cz, _sy)| {
             let dx = cx - player_cx;
             let dz = cz - player_cz;
             dx * dx + dz * dz
         });
-        meshes_to_request.truncate(max_meshes_per_frame);
 
         for (cx, cz, sy) in &meshes_to_request {
             self.mesh_loader.request_mesh(*cx, *cz, *sy);
-        }
-
-        // Mark chunks as not dirty to avoid re-requesting
-        if !meshes_to_request.is_empty() {
-            let mut world = self.world.write();
-            for (cx, cz, sy) in &meshes_to_request {
-                if let Some(chunk) = world.chunks.get_mut(&(*cx, *cz)) {
-                    chunk.subchunks[*sy as usize].mesh_dirty = false;
-                }
-            }
         }
 
         let day_factor = sun_dir.y.max(0.0).min(1.0);

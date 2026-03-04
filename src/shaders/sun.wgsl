@@ -10,6 +10,8 @@ struct Uniforms {
     screen_size: vec2<f32>,
     water_level: f32,
     reflection_mode: f32,
+    moon_position: vec3<f32>,
+    _pad1_moon: f32,
 };
 
 @group(0) @binding(0)
@@ -35,7 +37,7 @@ fn vs_sun(model: VertexInput) -> VertexOutput {
     let sun_dir = normalize(uniforms.sun_position);
     // Position far away to simulate infinite distance
     let sun_world_pos = uniforms.camera_pos + sun_dir * 450.0;
-    
+
     // Construct orthonormal basis for billboarding
     let forward = -sun_dir;
     let world_up = vec3<f32>(0.0, 1.0, 0.0);
@@ -45,8 +47,8 @@ fn vs_sun(model: VertexInput) -> VertexOutput {
     }
     let up = cross(forward, right);
 
-    // Significantly increased size to prevent clipping at edges
-    let size = 250.0;
+    // Keep angular sun size near real-world scale (~0.5 deg apparent diameter).
+    let size = 90.0;
 
     let offset = right * model.position.x * size + up * model.position.y * size;
     let world_pos = sun_world_pos + offset;
@@ -59,95 +61,50 @@ fn vs_sun(model: VertexInput) -> VertexOutput {
     return out;
 }
 
-// --- Procedural Helpers ---
-
-fn hash(p: vec2<f32>) -> f32 {
-    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453123);
-}
-
-fn noise(p: vec2<f32>) -> f32 {
-    let i = floor(p);
-    let f = fract(p);
-    let u = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash(i + vec2<f32>(0.0, 0.0)), hash(i + vec2<f32>(1.0, 0.0)), u.x),
-        mix(hash(i + vec2<f32>(0.0, 1.0)), hash(i + vec2<f32>(1.0, 1.0)), u.x), u.y);
-}
-
-fn get_corona(uv: vec2<f32>, time: f32) -> f32 {
-    let angle = atan2(uv.y, uv.x);
-    let d = length(uv);
-    let n = noise(vec2<f32>(angle * 3.0, time * 2.0)) * 0.5 + 0.5;
-    let corona = pow(1.0 - clamp(d * (1.1 - n * 0.3), 0.0, 1.0), 4.0);
-    return corona;
-}
-
-fn get_rays(uv: vec2<f32>, time: f32) -> f32 {
-    let angle = atan2(uv.y, uv.x);
-    let dist = length(uv);
-    
-    // Rotating primary rays
-    var rays = pow(abs(sin(angle * 4.0 + time * 0.2)), 12.0);
-    // Smaller secondary spikes
-    rays += pow(abs(sin(angle * 12.0 - time * 0.1)), 16.0) * 0.4;
-
-    // Steeper falloff to reach 0 before the quad edge (reaches 0 at dist=0.85)
-    rays *= pow(1.0 - clamp(dist / 0.85, 0.0, 1.0), 3.0);
-    return rays;
-}
-
 @fragment
 fn fs_sun(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv = in.uv * 2.0 - 1.0;
     let dist = length(uv);
-    
-    // Hard radial mask to ensure no square edges are visible
-    let radial_mask = smoothstep(1.0, 0.8, dist);
-    if radial_mask <= 0.0 {
+
+    // Fade billboard near edges to keep it invisible as a quad.
+    let edge_fade = 1.0 - smoothstep(0.92, 1.0, dist);
+
+    let sun_height = normalize(uniforms.sun_position).y;
+    let above_horizon = smoothstep(-0.05, 0.02, sun_height);
+    let sun_visibility = above_horizon * edge_fade;
+    if sun_visibility <= 0.001 {
         discard;
     }
 
-    let sun_height = normalize(uniforms.sun_position).y;
-    
-    // Dynamic color based on sun height
+    // Atmospheric extinction: blue/green attenuate more at low sun elevations.
     let sunset_factor = clamp(1.0 - abs(sun_height), 0.0, 1.0);
+    let air_mass = 1.0 / max(0.10, sun_height + 0.13);
+    let extinction = exp(-vec3<f32>(0.022, 0.052, 0.115) * air_mass * 0.9);
+    let base_color = vec3<f32>(1.20, 1.14, 1.05) * extinction;
+    let reddening = clamp((air_mass - 1.0) * 0.35, 0.0, 1.0);
 
-    let sun_color_midday = vec3<f32>(1.2, 1.1, 0.9);
-    let sun_color_sunset = vec3<f32>(1.5, 0.4, 0.1);
-    let color_core = mix(sun_color_midday, sun_color_sunset, pow(sunset_factor, 1.5));
-    
-    // 1. Solar Disk
-    let disk_radius = 0.03;
-    if dist < disk_radius {
-        let n = dist / disk_radius;
-        let limb_darkening = pow(1.0 - n * n, 0.5);
-        let disk_color = color_core * (1.5 + limb_darkening * 2.5);
-        return vec4<f32>(disk_color, 1.0);
-    }
+    // Solar disk with soft edge and mild limb darkening.
+    let disk_radius = 0.025;
+    let disk_mask = smoothstep(disk_radius + 0.0015, disk_radius - 0.0015, dist);
+    let disk_n = clamp(dist / disk_radius, 0.0, 1.0);
+    let limb_darkening = mix(1.08, 0.90, pow(disk_n, 1.55));
+    let disk_color = base_color * limb_darkening;
 
-    // 2. Multi-layered Glow
+    // Physically-inspired Mie-like halo: bright aureole + broad atmospheric glow.
+    let inner_halo = exp(-pow(dist / (disk_radius * 2.2), 2.0));
+    let outer_radius = mix(0.10, 0.16, sunset_factor);
+    let outer_halo = exp(-pow(dist / outer_radius, 2.0));
+    let halo_tint = mix(base_color, vec3<f32>(1.0, 0.72, 0.50), reddening * 0.8);
+
     var final_color = vec3<f32>(0.0);
+    final_color += disk_color * disk_mask * 1.75;
+    final_color += halo_tint * inner_halo * 0.16;
+    final_color += halo_tint * outer_halo * 0.06;
+
     var final_alpha = 0.0;
-
-    // Corona (shimmering inner ring)
-    let corona = get_corona(uv * 12.0, uniforms.time);
-    final_color += color_core * corona * 0.8 * radial_mask;
-    final_alpha = max(final_alpha, corona * 0.9 * radial_mask);
-
-    // Inner bloom (intense)
-    let inner_bloom = pow(1.0 - clamp((dist - disk_radius) * 6.0, 0.0, 1.0), 4.0);
-    final_color += color_core * inner_bloom * 2.5 * radial_mask;
-    final_alpha = max(final_alpha, inner_bloom * radial_mask);
-
-    // Outer atmospheric glow (larger at sunset)
-    let outer_radius = mix(0.5, 0.9, sunset_factor);
-    let outer_bloom = pow(1.0 - clamp(dist / outer_radius, 0.0, 1.0), 8.0);
-    final_color += mix(color_core, vec3<f32>(1.0, 0.2, 0.0), sunset_factor) * outer_bloom * 1.5 * radial_mask;
-    final_alpha = max(final_alpha, outer_bloom * 0.6 * radial_mask);
-
-    // 3. Diffraction Rays
-    let rays = get_rays(uv, uniforms.time);
-    final_color += color_core * rays * 3.0 * radial_mask;
-    final_alpha = clamp(final_alpha + rays * 0.7 * radial_mask, 0.0, 1.0);
+    final_alpha += disk_mask;
+    final_alpha += inner_halo * 0.12;
+    final_alpha += outer_halo * 0.05;
 
     // Underwater tinting
     if uniforms.is_underwater > 0.5 {
@@ -155,11 +112,12 @@ fn fs_sun(in: VertexOutput) -> @location(0) vec4<f32> {
         final_alpha *= 0.3;
     }
 
+    final_color *= sun_visibility;
+    final_alpha = clamp(final_alpha * sun_visibility, 0.0, 1.0);
+
     if final_alpha < 0.001 {
         discard;
     }
 
     return vec4<f32>(final_color, final_alpha);
 }
-
-

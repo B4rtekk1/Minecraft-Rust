@@ -20,4 +20,7 @@ pub struct Uniforms {
     pub water_level: f32,
     /// Reflection mode: 0=off, 1=SSR only
     pub reflection_mode: f32,
+    /// Moon direction (normalized) for night sky rendering
+    pub moon_position: [f32; 3],
+    pub _pad1_moon: f32,
 }

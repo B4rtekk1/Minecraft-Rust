@@ -95,80 +95,105 @@
         var max_uv = vec2<f32>(0.0, 0.0);
         var min_z = 1.0;
 
+        // If ANY corner is behind or on the near plane, the AABB straddles the
+        // clip boundary — projected NDC coords are unreliable, so conservatively
+        // treat the chunk as visible.
+        var any_behind = false;
+
         // Unroll the 8 corners manually
         // Corner 0: min, min, min
         var clip = cull_uniforms.view_proj * vec4<f32>(aabb_min.x, aabb_min.y, aabb_min.z, 1.0);
-        if clip.w <= 0.0 { return true; }
-        var ndc = clip.xyz / clip.w;
-        var uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
-        min_uv = min(min_uv, uv);
-        max_uv = max(max_uv, uv);
-        min_z = min(min_z, ndc.z);
+        if clip.w <= 0.0 { any_behind = true; } else {
+            var ndc = clip.xyz / clip.w;
+            var uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+            min_uv = min(min_uv, uv);
+            max_uv = max(max_uv, uv);
+            min_z = min(min_z, ndc.z);
+        }
 
         // Corner 1: max, min, min
         clip = cull_uniforms.view_proj * vec4<f32>(aabb_max.x, aabb_min.y, aabb_min.z, 1.0);
-        if clip.w <= 0.0 { return true; }
-        ndc = clip.xyz / clip.w;
-        uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
-        min_uv = min(min_uv, uv);
-        max_uv = max(max_uv, uv);
-        min_z = min(min_z, ndc.z);
+        if clip.w <= 0.0 { any_behind = true; } else {
+            var ndc = clip.xyz / clip.w;
+            var uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+            min_uv = min(min_uv, uv);
+            max_uv = max(max_uv, uv);
+            min_z = min(min_z, ndc.z);
+        }
 
         // Corner 2: min, max, min
         clip = cull_uniforms.view_proj * vec4<f32>(aabb_min.x, aabb_max.y, aabb_min.z, 1.0);
-        if clip.w <= 0.0 { return true; }
-        ndc = clip.xyz / clip.w;
-        uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
-        min_uv = min(min_uv, uv);
-        max_uv = max(max_uv, uv);
-        min_z = min(min_z, ndc.z);
+        if clip.w <= 0.0 { any_behind = true; } else {
+            var ndc = clip.xyz / clip.w;
+            var uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+            min_uv = min(min_uv, uv);
+            max_uv = max(max_uv, uv);
+            min_z = min(min_z, ndc.z);
+        }
 
         // Corner 3: max, max, min
         clip = cull_uniforms.view_proj * vec4<f32>(aabb_max.x, aabb_max.y, aabb_min.z, 1.0);
-        if clip.w <= 0.0 { return true; }
-        ndc = clip.xyz / clip.w;
-        uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
-        min_uv = min(min_uv, uv);
-        max_uv = max(max_uv, uv);
-        min_z = min(min_z, ndc.z);
+        if clip.w <= 0.0 { any_behind = true; } else {
+            var ndc = clip.xyz / clip.w;
+            var uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+            min_uv = min(min_uv, uv);
+            max_uv = max(max_uv, uv);
+            min_z = min(min_z, ndc.z);
+        }
 
         // Corner 4: min, min, max
         clip = cull_uniforms.view_proj * vec4<f32>(aabb_min.x, aabb_min.y, aabb_max.z, 1.0);
-        if clip.w <= 0.0 { return true; }
-        ndc = clip.xyz / clip.w;
-        uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
-        min_uv = min(min_uv, uv);
-        max_uv = max(max_uv, uv);
-        min_z = min(min_z, ndc.z);
+        if clip.w <= 0.0 { any_behind = true; } else {
+            var ndc = clip.xyz / clip.w;
+            var uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+            min_uv = min(min_uv, uv);
+            max_uv = max(max_uv, uv);
+            min_z = min(min_z, ndc.z);
+        }
 
         // Corner 5: max, min, max
         clip = cull_uniforms.view_proj * vec4<f32>(aabb_max.x, aabb_min.y, aabb_max.z, 1.0);
-        if clip.w <= 0.0 { return true; }
-        ndc = clip.xyz / clip.w;
-        uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
-        min_uv = min(min_uv, uv);
-        max_uv = max(max_uv, uv);
-        min_z = min(min_z, ndc.z);
+        if clip.w <= 0.0 { any_behind = true; } else {
+            var ndc = clip.xyz / clip.w;
+            var uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+            min_uv = min(min_uv, uv);
+            max_uv = max(max_uv, uv);
+            min_z = min(min_z, ndc.z);
+        }
 
         // Corner 6: min, max, max
         clip = cull_uniforms.view_proj * vec4<f32>(aabb_min.x, aabb_max.y, aabb_max.z, 1.0);
-        if clip.w <= 0.0 { return true; }
-        ndc = clip.xyz / clip.w;
-        uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
-        min_uv = min(min_uv, uv);
-        max_uv = max(max_uv, uv);
-        min_z = min(min_z, ndc.z);
+        if clip.w <= 0.0 { any_behind = true; } else {
+            var ndc = clip.xyz / clip.w;
+            var uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+            min_uv = min(min_uv, uv);
+            max_uv = max(max_uv, uv);
+            min_z = min(min_z, ndc.z);
+        }
 
         // Corner 7: max, max, max
         clip = cull_uniforms.view_proj * vec4<f32>(aabb_max.x, aabb_max.y, aabb_max.z, 1.0);
-        if clip.w <= 0.0 { return true; }
-        ndc = clip.xyz / clip.w;
-        uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
-        min_uv = min(min_uv, uv);
-        max_uv = max(max_uv, uv);
-        min_z = min(min_z, ndc.z);
+        if clip.w <= 0.0 { any_behind = true; } else {
+            var ndc = clip.xyz / clip.w;
+            var uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
+            min_uv = min(min_uv, uv);
+            max_uv = max(max_uv, uv);
+            min_z = min(min_z, ndc.z);
+        }
 
-        // Clamp UVs to screen and keep ordering stable
+        // If any corner was behind the near plane, NDC-derived bounding box is
+        // incomplete/invalid — conservatively mark as visible.
+        if any_behind { return true; }
+
+        // If the projected screen-space box doesn't overlap [0,1] at all,
+        // the AABB is fully off-screen — frustum culling should have caught this,
+        // but guard here to avoid sampling garbage UVs.
+        if max_uv.x < 0.0 || min_uv.x > 1.0 || max_uv.y < 0.0 || min_uv.y > 1.0 {
+            return false;
+        }
+
+        // Clamp UVs to visible screen area — safe because we already handled the
+        // "partially behind" case above.
         min_uv = clamp(min_uv, vec2<f32>(0.0), vec2<f32>(1.0));
         max_uv = clamp(max_uv, vec2<f32>(0.0), vec2<f32>(1.0));
 
