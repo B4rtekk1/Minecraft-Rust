@@ -90,7 +90,12 @@
 
     /// Test if an AABB is occluded by the Hi-Z pyramid
     /// Returns true if visible, false if occluded
+    /// When hiz_size is (0,0) (shadow passes), skips occlusion and returns true.
     fn is_occlusion_visible(aabb_min: vec3<f32>, aabb_max: vec3<f32>) -> bool {
+        // Shadow passes pass hiz_size=(0,0) — skip expensive Hi-Z test entirely
+        if cull_uniforms.hiz_size.x < 1.0 {
+            return true;
+        }
         var min_uv = vec2<f32>(1.0, 1.0);
         var max_uv = vec2<f32>(0.0, 0.0);
         var min_z = 1.0;

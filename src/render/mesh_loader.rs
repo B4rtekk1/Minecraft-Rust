@@ -27,8 +27,8 @@ pub struct MeshLoader {
 
 impl MeshLoader {
     pub fn new(world: Arc<parking_lot::RwLock<World>>, worker_count: usize) -> Self {
-        let (request_tx, request_rx) = bounded::<MeshRequest>(128);
-        let (result_tx, result_rx) = bounded::<MeshResult>(128);
+        let (request_tx, request_rx) = bounded::<MeshRequest>(256);
+        let (result_tx, result_rx) = bounded::<MeshResult>(256);
 
         for i in 0..worker_count {
             let rx = request_rx.clone();

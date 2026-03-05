@@ -23,7 +23,6 @@ Render3D is a high-performance voxel rendering engine and sandbox game drafted i
   - **Compute Culling**: A compute shader pre-pass aggressively culls invisible subchunks against the view frustum before the draw pass.
 - **Advanced Lighting**:
   - **Cascaded Shadow Maps (CSM)**: 4-cascade shadow system (up to 2048x2048 resolution) with Percentage-Closer Filtering (PCF) for soft, stable shadows.
-  - **SSAO**: Screen Space Ambient Occlusion for realistic depth and occlusion simulation.
   - **Atmospheric Scattering**: Physically based day/night cycle with dynamic sun/moon positioning and fog integration.
 - **Visual Effects**:
   - **Water**: Vertex displacement waves, Fresnel reflections, and specular highlights.

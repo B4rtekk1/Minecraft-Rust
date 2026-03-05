@@ -265,10 +265,11 @@ impl World {
         chunk_z: i32,
         subchunk_y: i32,
     ) -> ((Vec<Vertex>, Vec<u32>), (Vec<Vertex>, Vec<u32>)) {
-        let mut vertices = Vec::with_capacity(1500);
-        let mut indices = Vec::with_capacity(750);
-        let mut water_vertices = Vec::with_capacity(500);
-        let mut water_indices = Vec::with_capacity(250);
+        // Larger initial capacity reduces reallocations for dense subchunks
+        let mut vertices = Vec::with_capacity(4096);
+        let mut indices = Vec::with_capacity(2048);
+        let mut water_vertices = Vec::with_capacity(1024);
+        let mut water_indices = Vec::with_capacity(512);
 
         let base_x = chunk_x * CHUNK_SIZE;
         let base_y = subchunk_y * SUBCHUNK_HEIGHT;

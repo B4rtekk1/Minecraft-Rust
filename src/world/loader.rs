@@ -68,7 +68,8 @@ impl ChunkLoader {
     pub fn with_worker_count(num_workers: usize, seed: u32) -> Self {
         // Bounded channels prevent unbounded memory growth
         let (request_tx, request_rx) = bounded::<ChunkGenRequest>(256);
-        let (result_tx, result_rx) = bounded::<ChunkGenResult>(64);
+        // Larger result buffer prevents workers from blocking when main thread is busy
+        let (result_tx, result_rx) = bounded::<ChunkGenResult>(256);
 
         // Spawn worker threads, each with their own ChunkGenerator
         for worker_id in 0..num_workers {

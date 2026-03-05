@@ -13,11 +13,11 @@ use crate::render::frustum::AABB;
 use ::std::collections::BTreeMap;
 
 /// Maximum number of subchunks that can be stored in unified buffers
-const MAX_SUBCHUNKS: usize = 32768;
-/// Maximum vertices across all subchunks (~280MB at 56 bytes per vertex)
-const MAX_VERTICES: usize = 5_000_000;
-/// Maximum indices across all subchunks (~120MB at 4 bytes per index)
-const MAX_INDICES: usize = 30_000_000;
+const MAX_SUBCHUNKS: usize = 65536;
+/// Maximum vertices across all subchunks (~560MB at 56 bytes per vertex)
+const MAX_VERTICES: usize = 20_000_000;
+/// Maximum indices across all subchunks (~480MB at 4 bytes per index)
+const MAX_INDICES: usize = 60_000_000;
 
 /// wgpu DrawIndexedIndirect command structure (matches GPU layout)
 #[repr(C)]
@@ -185,11 +185,13 @@ impl IndirectManager {
             mapped_at_creation: false,
         });
 
-        // Visible count (atomic counter)
+        // Visible count (atomic counter) – needs INDIRECT so it can be used as
+        // the count argument in multi_draw_indexed_indirect_count.
         let visible_count_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Visible Count Buffer"),
             size: 4,
             usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::INDIRECT
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
@@ -408,7 +410,9 @@ impl IndirectManager {
             let visible_count = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&format!("Shadow Visible Count Buffer {}", i)),
                 size: 4,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::INDIRECT
+                    | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
 
@@ -522,24 +526,20 @@ impl IndirectManager {
             None => {
                 // Check if we have space to append
                 if self.next_vertex_offset + vertex_count > MAX_VERTICES as u32 {
-                    println!("Unified vertex buffer full, clearing indirect draw cache...");
+                    tracing::warn!(
+                        "Unified vertex buffer full ({}/{} vertices used), clearing indirect draw cache...",
+                        self.next_vertex_offset, MAX_VERTICES
+                    );
                     self.clear_gpu_data(queue);
-                    (self.next_vertex_offset, false)
-                } else {
-                    (self.next_vertex_offset, false)
+                    // Return false — caller must re-queue this upload next frame
+                    return false;
                 }
+                (self.next_vertex_offset, false)
             }
         };
 
         let (index_offset, reused_index) = match index_alloc {
             Some(block) => {
-                let size_key = block.count;
-                if let Some(vec) = self.free_index_blocks.get_mut(&size_key) {
-                    if vec.is_empty() {
-                        self.free_index_blocks.remove(&size_key);
-                    }
-                }
-
                 if block.count > index_count {
                     Self::add_free_block(
                         &mut self.free_index_blocks,
@@ -554,13 +554,16 @@ impl IndirectManager {
             }
             None => {
                 if self.next_index_offset + index_count > MAX_INDICES as u32 {
-                    println!("Unified index buffer full, clearing indirect draw cache...");
+                    tracing::warn!(
+                        "Unified index buffer full ({}/{} indices used), clearing indirect draw cache...",
+                        self.next_index_offset, MAX_INDICES
+                    );
                     self.clear_gpu_data(queue);
-                    (self.next_index_offset, false)
-                } else {
-                    let offset = self.next_index_offset;
-                    (offset, false)
+                    // Return false — caller must re-queue this upload next frame
+                    return false;
                 }
+                let offset = self.next_index_offset;
+                (offset, false)
             }
         };
 
@@ -742,9 +745,12 @@ impl IndirectManager {
             .push(block);
     }
 
-    /// Reset vertex/index offsets and clear allocations
+    /// Reset vertex/index offsets and clear all allocations.
+    /// After this call the unified buffers are logically empty and all subchunks
+    /// must be re-uploaded on the next mesh-build pass.
     fn clear_gpu_data(&mut self, queue: &wgpu::Queue) {
-        // Zero out metadata
+        // Zero out GPU metadata for every active slot so the GPU culling shader
+        // doesn't try to draw stale subchunks.
         for alloc in self.allocations.values() {
             let subchunk_meta = SubchunkGpuMeta {
                 aabb_min: [0.0; 4],
@@ -757,15 +763,18 @@ impl IndirectManager {
                 meta_byte_offset as u64,
                 bytemuck::bytes_of(&subchunk_meta),
             );
-            self.free_slots.push(alloc.slot_index);
         }
 
         self.allocations.clear();
         self.next_vertex_offset = 0;
         self.next_index_offset = 0;
         self.active_subchunk_count = 0;
-        self.free_vertex_blocks.clear(); // ← OK: BTreeMap ma .clear()
+        self.free_vertex_blocks.clear();
         self.free_index_blocks.clear();
+
+        // Fully rebuild free_slots so every slot is available again.
+        self.free_slots.clear();
+        self.free_slots.extend((0..MAX_SUBCHUNKS).rev());
     }
 
     /// Dispatch GPU frustum and occlusion culling
@@ -785,6 +794,7 @@ impl IndirectManager {
 
         queue.write_buffer(&self.visible_count_buffer, 0, &0u32.to_le_bytes());
 
+        // Use MAX_SUBCHUNKS so the shader can scan all slots (slots can be sparse)
         let uniforms = CullUniforms {
             view_proj: (*view_proj).into(),
             frustum_planes: *frustum_planes,
@@ -796,13 +806,11 @@ impl IndirectManager {
         queue.write_buffer(&self.cull_uniforms_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         if let Some(bind_group) = &self.cull_bind_group {
-            let active_size = (self.active_subchunk_count as u64
-                * size_of::<DrawIndexedIndirect>() as u64)
-                .next_multiple_of(4);
-
-            if active_size > 0 {
-                encoder.clear_buffer(&self.visible_draw_commands_buffer, 0, Some(active_size));
-            }
+            // Clear the ENTIRE visible draw commands buffer — slots are sparse and
+            // can have any index in [0, MAX_SUBCHUNKS), so clearing only
+            // active_subchunk_count entries leaves stale commands in higher slots,
+            // causing subchunks to be incorrectly drawn after removal.
+            encoder.clear_buffer(&self.visible_draw_commands_buffer, 0, None);
 
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Culling Pass"),
@@ -811,7 +819,7 @@ impl IndirectManager {
             cpass.set_pipeline(&self.cull_pipeline);
             cpass.set_bind_group(0, bind_group, &[]);
 
-            // Dispatch for all possible slots, as they can be anywhere in the buffer
+            // Dispatch for all possible slots (slots are sparse across the full range)
             let workgroup_count = (MAX_SUBCHUNKS as u32 + 63) / 64;
             cpass.dispatch_workgroups(workgroup_count, 1, 1);
         }
@@ -835,6 +843,16 @@ impl IndirectManager {
     /// Get visible draw commands buffer for a specific shadow cascade
     pub fn shadow_draw_commands(&self, cascade_idx: usize) -> &wgpu::Buffer {
         &self.shadow_visible_commands[cascade_idx]
+    }
+
+    /// Get GPU-side visible count buffer (for multi_draw_indexed_indirect_count)
+    pub fn visible_count_buffer(&self) -> &wgpu::Buffer {
+        &self.visible_count_buffer
+    }
+
+    /// Get GPU-side visible count buffer for a specific shadow cascade
+    pub fn shadow_visible_count_buffer(&self, cascade_idx: usize) -> &wgpu::Buffer {
+        &self.shadow_visible_counts[cascade_idx]
     }
 
     /// Get number of active subchunks (upper bound for draw count)
@@ -874,17 +892,14 @@ impl IndirectManager {
             bytemuck::bytes_of(&uniforms),
         );
 
-        let active_size = (self.active_subchunk_count as u64
-            * size_of::<DrawIndexedIndirect>() as u64)
-            .next_multiple_of(4);
-
-        if active_size > 0 {
-            encoder.clear_buffer(
-                &self.shadow_visible_commands[cascade_idx],
-                0,
-                Some(active_size),
-            );
-        }
+        // Clear the ENTIRE shadow visible commands buffer — same reason as the
+        // main culling pass: slots are sparse, so clearing only active_subchunk_count
+        // entries leaves stale shadow draw commands for removed subchunks.
+        encoder.clear_buffer(
+            &self.shadow_visible_commands[cascade_idx],
+            0,
+            None,
+        );
 
         let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some(&format!("Shadow Culling Pass {}", cascade_idx)),

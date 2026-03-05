@@ -115,7 +115,7 @@ impl Default for LightingSettings {
         Self {
             gamma: 2.2,
             exposure: 1.0,
-            ao_mode: AoMode::Ssao,
+            ao_mode: AoMode::Off,
             bloom_strength: 0.0,
         }
     }
@@ -124,7 +124,6 @@ impl Default for LightingSettings {
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
 pub enum AoMode {
     Off,
-    Ssao,
     Rtao,
 }
 
