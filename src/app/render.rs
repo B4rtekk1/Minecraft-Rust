@@ -8,7 +8,6 @@ use render3d::{
     build_player_model, extract_frustum_planes, BlockType, CHUNK_SIZE, DEFAULT_FOV,
     RENDER_DISTANCE, Uniforms, Vertex,
 };
-use render3d::render_core::csm::CsmManager;
 
 use crate::multiplayer::player::queue_remote_players_labels;
 use crate::ui::menu::GameState;
@@ -40,20 +39,49 @@ impl State {
             self.player_model_num_indices = all_indices.len() as u32;
 
             if !all_vertices.is_empty() {
-                self.player_model_vertex_buffer = Some(self.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("Player Model Vertex Buffer"),
-                        contents: bytemuck::cast_slice(&all_vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    },
-                ));
-                self.player_model_index_buffer = Some(self.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("Player Model Index Buffer"),
-                        contents: bytemuck::cast_slice(&all_indices),
-                        usage: wgpu::BufferUsages::INDEX,
-                    },
-                ));
+                let needed_verts = all_vertices.len() as u32;
+                let needed_idxs = all_indices.len() as u32;
+
+                // Reallocate only when buffer is too small (grow-only)
+                if needed_verts > self.player_model_vertex_capacity
+                    || self.player_model_vertex_buffer.is_none()
+                {
+                    let new_cap = (needed_verts * 2).max(256);
+                    self.player_model_vertex_buffer = Some(self.device.create_buffer(
+                        &wgpu::BufferDescriptor {
+                            label: Some("Player Model Vertex Buffer"),
+                            size: (new_cap as usize * size_of::<Vertex>()) as u64,
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        },
+                    ));
+                    self.player_model_vertex_capacity = new_cap;
+                }
+                if needed_idxs > self.player_model_index_capacity
+                    || self.player_model_index_buffer.is_none()
+                {
+                    let new_cap = (needed_idxs * 2).max(512);
+                    self.player_model_index_buffer = Some(self.device.create_buffer(
+                        &wgpu::BufferDescriptor {
+                            label: Some("Player Model Index Buffer"),
+                            size: (new_cap as usize * size_of::<u32>()) as u64,
+                            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        },
+                    ));
+                    self.player_model_index_capacity = new_cap;
+                }
+
+                self.queue.write_buffer(
+                    self.player_model_vertex_buffer.as_ref().unwrap(),
+                    0,
+                    bytemuck::cast_slice(&all_vertices),
+                );
+                self.queue.write_buffer(
+                    self.player_model_index_buffer.as_ref().unwrap(),
+                    0,
+                    bytemuck::cast_slice(&all_indices),
+                );
             }
         } else {
             self.player_model_num_indices = 0;
@@ -84,7 +112,7 @@ impl State {
         let moon_y = -sun_y;
         let moon_z = -sun_z;
 
-        let mut csm = CsmManager::new();
+        let mut csm = &mut self.csm;
         let fov_y = DEFAULT_FOV;
         csm.update(&view_mat, sun_dir, 0.1, 300.0, aspect, fov_y);
 
@@ -132,7 +160,9 @@ impl State {
         let player_cx = (self.camera.position.x / CHUNK_SIZE as f32).floor() as i32;
         let player_cz = (self.camera.position.z / CHUNK_SIZE as f32).floor() as i32;
 
-        // Shadow pass - 4 cascades
+        // --- Shadow pass: compute upload + dispatch first for all cascades ---
+        // Precompute frustum arrays for all cascades
+        let mut shadow_frustum_arrays = [[[0f32; 4]; 6]; 4];
         for i in 0..4 {
             let cascade_matrix: [[f32; 4]; 4] = csm.cascades[i].view_proj.into();
             let mut shadow_uniform_data = [0f32; 64];
@@ -145,30 +175,36 @@ impl State {
                 bytemuck::cast_slice(&shadow_uniform_data),
             );
 
-            let offset = (i * 256) as u32;
             let cascade_view_proj = csm.cascades[i].view_proj;
             let shadow_frustum = extract_frustum_planes(&cascade_view_proj);
-            let shadow_frustum_array = frustum_planes_to_array(&shadow_frustum);
+            shadow_frustum_arrays[i] = frustum_planes_to_array(&shadow_frustum);
+        }
 
+        // Dispatch ALL shadow culling compute passes first (allows GPU overlap)
+        for i in 0..4 {
             self.indirect_manager.dispatch_shadow_culling(
                 &mut encoder,
                 &self.queue,
                 i,
-                &shadow_frustum_array,
+                &shadow_frustum_arrays[i],
             );
             self.water_indirect_manager.dispatch_shadow_culling(
                 &mut encoder,
                 &self.queue,
                 i,
-                &shadow_frustum_array,
+                &shadow_frustum_arrays[i],
             );
+        }
 
-            const SHADOW_PASS_LABELS: [&str; 4] = [
-                "Shadow Pass Cascade 0",
-                "Shadow Pass Cascade 1",
-                "Shadow Pass Cascade 2",
-                "Shadow Pass Cascade 3",
-            ];
+        // Then execute ALL shadow render passes (after all culling is dispatched)
+        const SHADOW_PASS_LABELS: [&str; 4] = [
+            "Shadow Pass Cascade 0",
+            "Shadow Pass Cascade 1",
+            "Shadow Pass Cascade 2",
+            "Shadow Pass Cascade 3",
+        ];
+        for i in 0..4 {
+            let offset = (i * 256) as u32;
             let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(SHADOW_PASS_LABELS[i]),
                 color_attachments: &[],

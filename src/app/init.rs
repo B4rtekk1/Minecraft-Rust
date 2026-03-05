@@ -1176,6 +1176,8 @@ impl State {
             player_model_vertex_buffer: None,
             player_model_index_buffer: None,
             player_model_num_indices: 0,
+            player_model_vertex_capacity: 0,
+            player_model_index_capacity: 0,
             chunk_loader,
             last_gen_player_cx: i32::MIN,
             last_gen_player_cz: i32::MIN,
@@ -1211,6 +1213,7 @@ impl State {
             depth_resolve_pipeline,
             depth_resolve_bind_group,
             supports_indirect_count,
+            csm: render3d::render_core::csm::CsmManager::new(),
         }
     }
 

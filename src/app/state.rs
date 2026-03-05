@@ -13,6 +13,7 @@ use render3d::{
     Camera, DiggingState, IndirectManager, InputState, World,
 };
 use render3d::chunk_loader::ChunkLoader;
+use render3d::render_core::csm::CsmManager;
 
 pub struct State {
     pub surface: wgpu::Surface<'static>,
@@ -86,6 +87,9 @@ pub struct State {
     pub player_model_vertex_buffer: Option<wgpu::Buffer>,
     pub player_model_index_buffer: Option<wgpu::Buffer>,
     pub player_model_num_indices: u32,
+    /// Capacity of player model buffers in number of vertices/indices (for reuse)
+    pub player_model_vertex_capacity: u32,
+    pub player_model_index_capacity: u32,
     // Async chunk loading
     pub chunk_loader: ChunkLoader,
     /// Cached player chunk coords — missing-chunk scan is skipped when unchanged
@@ -131,6 +135,8 @@ pub struct State {
     pub depth_resolve_bind_group: wgpu::BindGroup,
     /// Whether the device supports MULTI_DRAW_INDIRECT_COUNT feature
     pub supports_indirect_count: bool,
+    /// Cached CSM manager — reused every frame instead of re-allocated
+    pub csm: CsmManager,
 }
 
 pub struct WorldSnapshot {
