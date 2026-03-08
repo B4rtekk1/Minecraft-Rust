@@ -3,7 +3,6 @@ use std::sync::Arc;
 use crate::multiplayer::protocol::Packet;
 use crate::multiplayer::tcp::TcpServer;
 
-/// Run a headless dedicated game server on the given address.
 pub async fn run_dedicated_server(addr: &str) {
     match TcpServer::bind(addr).await {
         Ok(server_inst) => {
@@ -60,7 +59,8 @@ pub async fn run_dedicated_server(addr: &str) {
                                     }
                                     Err(_) => {
                                         println!("Client {} disconnected", id);
-                                        let disconnect_packet = Packet::Disconnect { player_id: id };
+                                        let disconnect_packet =
+                                            Packet::Disconnect { player_id: id };
                                         let _ = server_clone
                                             .broadcast_except(&disconnect_packet, id)
                                             .await;
@@ -82,4 +82,3 @@ pub async fn run_dedicated_server(addr: &str) {
         }
     }
 }
-

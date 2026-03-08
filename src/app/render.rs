@@ -1,12 +1,10 @@
 use cgmath::{InnerSpace, Matrix4, Rad, SquareMatrix};
-use glyphon::{
-    Attrs, Color, Family, Metrics, Shaping, TextArea, TextBounds,
-};
+use glyphon::{Attrs, Color, Family, Metrics, Shaping, TextArea, TextBounds};
 use wgpu::util::DeviceExt;
 
 use render3d::{
-    build_player_model, extract_frustum_planes, BlockType, CHUNK_SIZE, DEFAULT_FOV,
-    RENDER_DISTANCE, Uniforms, Vertex,
+    CHUNK_SIZE, DEFAULT_FOV, RENDER_DISTANCE, Uniforms, Vertex, build_player_model,
+    extract_frustum_planes,
 };
 
 use crate::multiplayer::player::queue_remote_players_labels;
@@ -23,7 +21,6 @@ impl State {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // 1. Build remote player meshes before starting render pass
         if !self.remote_players.is_empty() && self.game_state != GameState::Menu {
             let mut all_vertices = Vec::with_capacity(self.remote_players.len() * 16);
             let mut all_indices = Vec::with_capacity(self.remote_players.len() * 24);
@@ -42,33 +39,30 @@ impl State {
                 let needed_verts = all_vertices.len() as u32;
                 let needed_idxs = all_indices.len() as u32;
 
-                // Reallocate only when buffer is too small (grow-only)
                 if needed_verts > self.player_model_vertex_capacity
                     || self.player_model_vertex_buffer.is_none()
                 {
                     let new_cap = (needed_verts * 2).max(256);
-                    self.player_model_vertex_buffer = Some(self.device.create_buffer(
-                        &wgpu::BufferDescriptor {
+                    self.player_model_vertex_buffer =
+                        Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                             label: Some("Player Model Vertex Buffer"),
                             size: (new_cap as usize * size_of::<Vertex>()) as u64,
                             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                             mapped_at_creation: false,
-                        },
-                    ));
+                        }));
                     self.player_model_vertex_capacity = new_cap;
                 }
                 if needed_idxs > self.player_model_index_capacity
                     || self.player_model_index_buffer.is_none()
                 {
                     let new_cap = (needed_idxs * 2).max(512);
-                    self.player_model_index_buffer = Some(self.device.create_buffer(
-                        &wgpu::BufferDescriptor {
+                    self.player_model_index_buffer =
+                        Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                             label: Some("Player Model Index Buffer"),
                             size: (new_cap as usize * size_of::<u32>()) as u64,
                             usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                             mapped_at_creation: false,
-                        },
-                    ));
+                        }));
                     self.player_model_index_capacity = new_cap;
                 }
 
@@ -94,7 +88,6 @@ impl State {
             });
 
         let aspect = self.config.width as f32 / self.config.height as f32;
-        // far plane: RENDER_DISTANCE=12 chunks × 16 blocks + diagonal overhead ≈ 320 blocks
         let far_plane = (RENDER_DISTANCE as f32 * CHUNK_SIZE as f32 * 1.5).max(400.0);
         let proj = cgmath::perspective(Rad(DEFAULT_FOV), aspect, 0.1, far_plane);
         let view_mat = self.camera.view_matrix();
@@ -114,7 +107,7 @@ impl State {
         let moon_y = -sun_y;
         let moon_z = -sun_z;
 
-        let mut csm = &mut self.csm;
+        let csm = &mut self.csm;
         let fov_y = DEFAULT_FOV;
         csm.update(&view_mat, sun_dir, 0.1, 300.0, aspect, fov_y);
 
@@ -161,12 +154,8 @@ impl State {
 
         let player_cx = (self.camera.position.x / CHUNK_SIZE as f32).floor() as i32;
         let player_cz = (self.camera.position.z / CHUNK_SIZE as f32).floor() as i32;
-
-        // Dynamic cascade count based on render distance for performance
         let active_cascades = render3d::get_active_cascade_count(RENDER_DISTANCE);
 
-        // --- Shadow pass: compute upload + dispatch first for active cascades ---
-        // Precompute frustum arrays for active cascades only
         let mut shadow_frustum_arrays = [[[0f32; 4]; 6]; 4];
         for i in 0..active_cascades {
             let cascade_matrix: [[f32; 4]; 4] = csm.cascades[i].view_proj.into();
@@ -185,7 +174,6 @@ impl State {
             shadow_frustum_arrays[i] = frustum_planes_to_array(&shadow_frustum);
         }
 
-        // Dispatch shadow culling compute passes for active cascades (allows GPU overlap)
         for i in 0..active_cascades {
             self.indirect_manager.dispatch_shadow_culling(
                 &mut encoder,
@@ -201,7 +189,6 @@ impl State {
             );
         }
 
-        // Then execute shadow render passes for active cascades (after all culling is dispatched)
         const SHADOW_PASS_LABELS: [&str; 4] = [
             "Shadow Pass Cascade 0",
             "Shadow Pass Cascade 1",
@@ -337,7 +324,6 @@ impl State {
             [self.config.width as f32, self.config.height as f32],
         );
 
-        // Opaque Pass: Sky, Terrain, Players, Sun
         {
             let mut opaque_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Opaque Pass"),
@@ -366,7 +352,6 @@ impl State {
                 ..Default::default()
             });
 
-            // 1. Sky
             opaque_pass.set_pipeline(&self.sky_pipeline);
             opaque_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             opaque_pass.set_vertex_buffer(0, self.sun_vertex_buffer.slice(..));
@@ -374,7 +359,6 @@ impl State {
                 .set_index_buffer(self.sun_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             opaque_pass.draw_indexed(0..6, 0, 0..1);
 
-            // 2. Terrain
             opaque_pass.set_pipeline(&self.render_pipeline);
             opaque_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             opaque_pass.set_vertex_buffer(0, self.indirect_manager.vertex_buffer().slice(..));
@@ -398,7 +382,6 @@ impl State {
                 );
             }
 
-            // 3. Players
             if self.player_model_num_indices > 0 {
                 if let (Some(vb), Some(ib)) = (
                     &self.player_model_vertex_buffer,
@@ -412,7 +395,6 @@ impl State {
                 }
             }
 
-            // 4. Sun
             opaque_pass.set_pipeline(&self.sun_pipeline);
             opaque_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             opaque_pass.set_vertex_buffer(0, self.sun_vertex_buffer.slice(..));
@@ -421,7 +403,6 @@ impl State {
             opaque_pass.draw_indexed(0..6, 0, 0..1);
         }
 
-        // Depth Resolve Pass
         {
             let mut depth_resolve_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Depth Resolve Pass (SSR + Hi-Z)"),
@@ -459,7 +440,6 @@ impl State {
             depth_resolve_pass.draw(0..3, 0..1);
         }
 
-        // Hi-Z Generation
         for i in 0..self.hiz_bind_groups.len() {
             let mut hiz_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Hi-Z Generation Pass Level"),
@@ -475,7 +455,6 @@ impl State {
 
         let resolve_target = &self.scene_color_view;
 
-        // Transparent Pass: Water
         {
             let mut transparent_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Transparent Pass"),
@@ -524,7 +503,6 @@ impl State {
             }
         }
 
-        // Composite pass
         {
             let mut composite_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Composite Pass"),
@@ -545,7 +523,6 @@ impl State {
             composite_pass.draw(0..3, 0..1);
         }
 
-        // UI Pass
         {
             let mut ui_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("UI Pass"),
@@ -580,7 +557,6 @@ impl State {
             }
         }
 
-        // Progress bar
         if self.digging.target.is_some() && self.digging.break_time > 0.0 {
             let progress = (self.digging.progress / self.digging.break_time).min(1.0);
 
@@ -593,16 +569,64 @@ impl State {
             let normal = Vertex::pack_normal([0.0, 0.0, 1.0]);
 
             let mut vertices = Vec::with_capacity(8);
-            vertices.push(Vertex { position: [-bar_width, bar_y - bar_height, 0.0], normal, color: bg_color, uv: [0.0, 0.0], tex_index: 0.0 });
-            vertices.push(Vertex { position: [bar_width, bar_y - bar_height, 0.0], normal, color: bg_color, uv: [1.0, 0.0], tex_index: 0.0 });
-            vertices.push(Vertex { position: [bar_width, bar_y + bar_height, 0.0], normal, color: bg_color, uv: [1.0, 1.0], tex_index: 0.0 });
-            vertices.push(Vertex { position: [-bar_width, bar_y + bar_height, 0.0], normal, color: bg_color, uv: [0.0, 1.0], tex_index: 0.0 });
+            vertices.push(Vertex {
+                position: [-bar_width, bar_y - bar_height, 0.0],
+                normal,
+                color: bg_color,
+                uv: [0.0, 0.0],
+                tex_index: 0.0,
+            });
+            vertices.push(Vertex {
+                position: [bar_width, bar_y - bar_height, 0.0],
+                normal,
+                color: bg_color,
+                uv: [1.0, 0.0],
+                tex_index: 0.0,
+            });
+            vertices.push(Vertex {
+                position: [bar_width, bar_y + bar_height, 0.0],
+                normal,
+                color: bg_color,
+                uv: [1.0, 1.0],
+                tex_index: 0.0,
+            });
+            vertices.push(Vertex {
+                position: [-bar_width, bar_y + bar_height, 0.0],
+                normal,
+                color: bg_color,
+                uv: [0.0, 1.0],
+                tex_index: 0.0,
+            });
 
             let prog_width = bar_width * 2.0 * progress - bar_width;
-            vertices.push(Vertex { position: [-bar_width + 0.005, bar_y - bar_height + 0.003, 0.0], normal, color: prog_color, uv: [0.0, 0.0], tex_index: 0.0 });
-            vertices.push(Vertex { position: [prog_width - 0.005, bar_y - bar_height + 0.003, 0.0], normal, color: prog_color, uv: [1.0, 0.0], tex_index: 0.0 });
-            vertices.push(Vertex { position: [prog_width - 0.005, bar_y + bar_height - 0.003, 0.0], normal, color: prog_color, uv: [1.0, 1.0], tex_index: 0.0 });
-            vertices.push(Vertex { position: [-bar_width + 0.005, bar_y + bar_height - 0.003, 0.0], normal, color: prog_color, uv: [0.0, 1.0], tex_index: 0.0 });
+            vertices.push(Vertex {
+                position: [-bar_width + 0.005, bar_y - bar_height + 0.003, 0.0],
+                normal,
+                color: prog_color,
+                uv: [0.0, 0.0],
+                tex_index: 0.0,
+            });
+            vertices.push(Vertex {
+                position: [prog_width - 0.005, bar_y - bar_height + 0.003, 0.0],
+                normal,
+                color: prog_color,
+                uv: [1.0, 0.0],
+                tex_index: 0.0,
+            });
+            vertices.push(Vertex {
+                position: [prog_width - 0.005, bar_y + bar_height - 0.003, 0.0],
+                normal,
+                color: prog_color,
+                uv: [1.0, 1.0],
+                tex_index: 0.0,
+            });
+            vertices.push(Vertex {
+                position: [-bar_width + 0.005, bar_y + bar_height - 0.003, 0.0],
+                normal,
+                color: prog_color,
+                uv: [0.0, 1.0],
+                tex_index: 0.0,
+            });
 
             let indices: [u32; 12] = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
 
@@ -653,7 +677,6 @@ impl State {
             progress_pass.draw_indexed(0..12, 0, 0..1);
         }
 
-        // Menu overlay
         if self.game_state == GameState::Menu {
             self.render_menu(&mut encoder, &view);
         } else {
@@ -664,7 +687,6 @@ impl State {
             );
         }
 
-        // Text rendering
         {
             let fps_text = format!(
                 "FPS: {:.0}\nFrame: {:.2} ms\nCPU update: {:.2} ms\nChunks: {}\nSubchunks: {}",
@@ -817,11 +839,18 @@ impl State {
         );
 
         let addr_selected = self.menu_state.selected_field == MenuField::ServerAddress;
-        if addr_selected { text.push_str("> "); }
-        text.push_str(&format!("Server Address: {}\n", self.menu_state.server_address));
+        if addr_selected {
+            text.push_str("> ");
+        }
+        text.push_str(&format!(
+            "Server Address: {}\n",
+            self.menu_state.server_address
+        ));
 
         let user_selected = self.menu_state.selected_field == MenuField::Username;
-        if user_selected { text.push_str("> "); }
+        if user_selected {
+            text.push_str("> ");
+        }
         text.push_str(&format!("Username: {}\n\n", self.menu_state.username));
 
         text.push_str("[ENTER] Connect to Server\n");
@@ -849,13 +878,5 @@ impl State {
 
     pub fn render_menu(&mut self, _encoder: &mut wgpu::CommandEncoder, _view: &wgpu::TextureView) {}
 
-    pub fn render_remote_players(
-        &mut self,
-        _view_proj: &Matrix4<f32>,
-        _width: f32,
-        _height: f32,
-    ) {
-        // Player model buffers are already built at the start of render().
-    }
+    pub fn render_remote_players(&mut self, _view_proj: &Matrix4<f32>, _width: f32, _height: f32) {}
 }
-

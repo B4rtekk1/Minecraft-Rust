@@ -2,7 +2,6 @@
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
-    // Fullscreen triangle trick (covers screen with 3 vertices)
     let x = f32((vertex_index << 1u) & 2u);
     let y = f32(vertex_index & 2u);
     return vec4<f32>(x * 2.0 - 1.0, y * 2.0 - 1.0, 0.0, 1.0);
@@ -16,10 +15,7 @@ struct ResolveOutput {
 @fragment
 fn fs_main(@builtin(position) pos: vec4<f32>) -> ResolveOutput {
     let coords = vec2<i32>(pos.xy);
-    
-    // Resolve MSAA depth: 
-    // - min_depth (closest) for SSR/Refractions to ensure contact
-    // - max_depth (furthest) for Hi-Z conservative occlusion culling
+
     var min_depth = 1.0;
     var max_depth = 0.0;
     for (var i = 0; i < 4; i++) {

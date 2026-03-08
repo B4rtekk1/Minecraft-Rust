@@ -1,6 +1,6 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use std::collections::HashMap;
 
 use glyphon::{FontSystem, SwashCache, TextAtlas, TextRenderer, Viewport};
 use wgpu;
@@ -9,11 +9,9 @@ use winit::window::Window;
 use crate::multiplayer::player::RemotePlayer;
 use crate::multiplayer::protocol::Packet;
 use crate::ui::menu::{GameState, MenuState};
-use render3d::{
-    Camera, DiggingState, IndirectManager, InputState, World,
-};
 use render3d::chunk_loader::ChunkLoader;
 use render3d::render_core::csm::CsmManager;
+use render3d::{Camera, DiggingState, IndirectManager, InputState, World};
 
 pub struct State {
     pub surface: wgpu::Surface<'static>,
@@ -71,11 +69,9 @@ pub struct State {
     pub texture_sampler: wgpu::Sampler,
     pub game_state: GameState,
     pub menu_state: MenuState,
-    /// Reflection mode: 0=off, 1=SSR (default)
+    /// Reflection mode: 0=off, 1=SSR
     pub reflection_mode: u32,
-    /// Cached underwater state (1.0 = underwater, 0.0 = above water), updated each tick
     pub is_underwater: f32,
-    // Multiplayer
     pub remote_players: HashMap<u32, RemotePlayer>,
     pub my_player_id: u32,
     pub last_position_send: Instant,
@@ -83,19 +79,14 @@ pub struct State {
     pub network_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Packet>>,
     pub network_tx: Option<tokio::sync::mpsc::UnboundedSender<Packet>>,
     pub last_input_time: Instant,
-    // Player model rendering
     pub player_model_vertex_buffer: Option<wgpu::Buffer>,
     pub player_model_index_buffer: Option<wgpu::Buffer>,
     pub player_model_num_indices: u32,
-    /// Capacity of player model buffers in number of vertices/indices (for reuse)
     pub player_model_vertex_capacity: u32,
     pub player_model_index_capacity: u32,
-    // Async chunk loading
     pub chunk_loader: ChunkLoader,
-    /// Cached player chunk coords — missing-chunk scan is skipped when unchanged
     pub last_gen_player_cx: i32,
     pub last_gen_player_cz: i32,
-    // SSR (Screen Space Reflections) for water
     pub ssr_color_texture: wgpu::Texture,
     pub ssr_color_view: wgpu::TextureView,
     pub ssr_depth_texture: wgpu::Texture,
@@ -104,7 +95,6 @@ pub struct State {
     pub water_bind_group: wgpu::BindGroup,
     pub water_bind_group_layout: wgpu::BindGroupLayout,
     pub surface_format: wgpu::TextureFormat,
-    // Glyphon text rendering
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
     pub text_atlas: TextAtlas,
@@ -118,24 +108,18 @@ pub struct State {
     pub composite_bind_group: wgpu::BindGroup,
     pub scene_color_texture: wgpu::Texture,
     pub scene_color_view: wgpu::TextureView,
-    // GPU Indirect Drawing
     pub indirect_manager: IndirectManager,
     pub water_indirect_manager: IndirectManager,
-    // Hi-Z Occlusion Culling
     pub hiz_texture: wgpu::Texture,
     pub hiz_view: wgpu::TextureView,
     pub hiz_mips: Vec<wgpu::TextureView>,
     pub hiz_pipeline: wgpu::ComputePipeline,
     pub hiz_bind_groups: Vec<wgpu::BindGroup>,
     pub hiz_bind_group_layout: wgpu::BindGroupLayout,
-    /// Dimensions of the Hi-Z texture (matches screen size).
     pub hiz_size: [u32; 2],
-    // Depth resolve for SSR
     pub depth_resolve_pipeline: wgpu::RenderPipeline,
     pub depth_resolve_bind_group: wgpu::BindGroup,
-    /// Whether the device supports MULTI_DRAW_INDIRECT_COUNT feature
     pub supports_indirect_count: bool,
-    /// Cached CSM manager — reused every frame instead of re-allocated
     pub csm: CsmManager,
 }
 
@@ -151,4 +135,3 @@ pub struct WorldWriteOps {
     pub block_break: Option<(i32, i32, i32)>,
     pub mark_dirty: Vec<(i32, i32, i32)>,
 }
-

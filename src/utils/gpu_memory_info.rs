@@ -31,7 +31,7 @@ impl GpuMemoryInfo{
         let info = adapter.get_info();
         let backend = info.backend;
 
-        println!("GPU backend {:?}", backend);
+        tracing::info!("GPU backend {:?}", backend);
 
         let (total_vram_bytes, available_vram_bytes) = match backend {
             wgpu::Backend::Vulkan => {
@@ -165,14 +165,15 @@ impl VulkanMemoryDetector {
             let mem_props = instance.get_physical_device_memory_properties(physical_device);
 
             let mut total = 0u64;
-            println!("Vulkan memory heaps:");
+            tracing::info!("Vulkan memory heaps:");
             for i in 0..mem_props.memory_heap_count {
                 let heap = mem_props.memory_heaps[i as usize];
                 let is_device_local = heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL);
-                println!("  Heap {}: {} MB (device_local: {})",
-                         i,
-                         heap.size / 1024 / 1024,
-                         is_device_local
+                tracing::info!(
+                    "  Heap {}: {} MB (device_local: {})",
+                    i,
+                    heap.size / 1024 / 1024,
+                    is_device_local
                 );
 
                 if is_device_local {
@@ -216,14 +217,14 @@ impl Dx12MemoryDetector {
 
             let total = desc.DedicatedVideoMemory as u64;
 
-            println!("DirectX 12 adapter info:");
+            tracing::info!("DirectX 12 adapter info:");
 
             let name_len = desc.Description.iter().position(|&c| c == 0).unwrap_or(desc.Description.len());
             let name = String::from_utf16_lossy(&desc.Description[..name_len]);
-            println!("  Name: {}", name);
-            println!("  Dedicated video memory: {} MB", total / 1024 / 1024);
-            println!("  Dedicated system memory: {} MB", desc.DedicatedSystemMemory as u64 / 1024 / 1024);
-            println!("  Shared system memory: {} MB", desc.SharedSystemMemory as u64 / 1024 / 1024);
+            tracing::info!("  Name: {}", name);
+            tracing::info!("  Dedicated video memory: {} MB", total / 1024 / 1024);
+            tracing::info!("  Dedicated system memory: {} MB", desc.DedicatedSystemMemory as u64 / 1024 / 1024);
+            tracing::info!("  Shared system memory: {} MB", desc.SharedSystemMemory as u64 / 1024 / 1024);
 
             let available = match adapter.cast::<IDXGIAdapter3>() {
                 Ok(adapter3) => {
@@ -234,21 +235,21 @@ impl Dx12MemoryDetector {
                         &mut mem_info,
                     ) {
                         Ok(_) => {
-                            println!("  Budget: {} MB", mem_info.Budget / 1024 / 1024);
-                            println!("  Current usage: {} MB", mem_info.CurrentUsage / 1024 / 1024);
-                            println!("  Available for reservation: {} MB", mem_info.AvailableForReservation / 1024 / 1024);
-                            println!("  Current reservation: {} MB", mem_info.CurrentReservation / 1024 / 1024);
+                            tracing::info!("  Budget: {} MB", mem_info.Budget / 1024 / 1024);
+                            tracing::info!("  Current usage: {} MB", mem_info.CurrentUsage / 1024 / 1024);
+                            tracing::info!("  Available for reservation: {} MB", mem_info.AvailableForReservation / 1024 / 1024);
+                            tracing::info!("  Current reservation: {} MB", mem_info.CurrentReservation / 1024 / 1024);
 
                             mem_info.Budget.saturating_sub(mem_info.CurrentUsage)
                         }
                         Err(e) => {
-                            eprintln!("  Failed to query video memory info: {:?}", e);
+                            tracing::warn!("  Failed to query video memory info: {:?}", e);
                             total
                         }
                     }
                 }
                 Err(_) => {
-                    println!("  IDXGIAdapter3 not available, using total VRAM as available");
+                    tracing::info!("  IDXGIAdapter3 not available, using total VRAM as available");
                     total
                 }
             };

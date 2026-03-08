@@ -1,7 +1,3 @@
-/// Composite Shader
-///
-/// Neutral scene copy pass (no extra post-process effects).
-
 struct Uniforms {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
@@ -27,7 +23,6 @@ var scene_texture: texture_2d<f32>;
 @group(0) @binding(2)
 var composite_sampler: sampler;
 
-// Full-screen triangle vertices
 var<private> positions: array<vec2<f32>, 3> = array<vec2<f32>, 3>(
     vec2<f32>(-1.0, -1.0),
     vec2<f32>(3.0, -1.0),

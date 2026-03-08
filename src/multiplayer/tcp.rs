@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::multiplayer::protocol::Packet;
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Result};
@@ -6,11 +8,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::RwLock;
 
 const READ_BUFFER_SIZE: usize = 4096;
 
-/// TCP connection wrapper implementing the transport layer
 pub struct TcpConnection {
     writer: Arc<RwLock<tokio::net::tcp::OwnedWriteHalf>>,
     reader: Arc<RwLock<tokio::net::tcp::OwnedReadHalf>>,
@@ -52,7 +53,6 @@ impl TcpConnection {
 
         let mut reader = self.reader.write().await;
 
-        // Read packet length (2 bytes)
         let mut len_buf = [0u8; 2];
         reader.read_exact(&mut len_buf).await?;
         let len = u16::from_le_bytes(len_buf) as usize;
@@ -61,7 +61,6 @@ impl TcpConnection {
             return Err(Error::new(ErrorKind::InvalidData, "Packet too large"));
         }
 
-        // Read packet data
         let mut data = vec![0u8; len + 2];
         data[0..2].copy_from_slice(&len_buf);
         reader.read_exact(&mut data[2..]).await?;
@@ -81,7 +80,6 @@ impl TcpConnection {
     }
 }
 
-/// TCP server that listens for incoming connections
 pub struct TcpServer {
     listener: Option<TcpListener>,
     connections: Arc<RwLock<HashMap<u32, Arc<TcpConnection>>>>,
@@ -92,7 +90,7 @@ pub struct TcpServer {
 impl TcpServer {
     pub async fn bind(addr: &str) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
-        println!("[TCP Server] Listening on {}", addr);
+        tracing::info!("[TCP Server] Listening on {}", addr);
 
         Ok(Self {
             listener: Some(listener),
@@ -102,7 +100,6 @@ impl TcpServer {
         })
     }
 
-    /// Accept a new connection and return its ID
     pub async fn accept(&self) -> Result<(u32, Arc<TcpConnection>)> {
         let listener = self
             .listener
@@ -120,48 +117,43 @@ impl TcpServer {
             conns.insert(id, connection.clone());
         }
 
-        println!("[TCP Server] Client {} connected from {}", id, addr);
+        tracing::info!("[TCP Server] Client {} connected from {}", id, addr);
         Ok((id, connection))
     }
 
-    /// Broadcast a packet to all connected clients
     pub async fn broadcast(&self, packet: &Packet) -> Result<()> {
         let conns = self.connections.read().await;
         for (id, conn) in conns.iter() {
             if let Err(e) = conn.send(packet).await {
-                eprintln!("[TCP Server] Failed to send to client {}: {}", id, e);
+                tracing::warn!("[TCP Server] Failed to send to client {}: {}", id, e);
             }
         }
         Ok(())
     }
 
-    /// Broadcast a packet to all clients except one
     pub async fn broadcast_except(&self, packet: &Packet, except_id: u32) -> Result<()> {
         let conns = self.connections.read().await;
         for (id, conn) in conns.iter() {
             if *id != except_id {
                 if let Err(e) = conn.send(packet).await {
-                    eprintln!("[TCP Server] Failed to send to client {}: {}", id, e);
+                    tracing::warn!("[TCP Server] Failed to send to client {}: {}", id, e);
                 }
             }
         }
         Ok(())
     }
 
-    /// Remove a disconnected client
     pub async fn remove_client(&self, id: u32) {
         let mut conns = self.connections.write().await;
         if conns.remove(&id).is_some() {
-            println!("[TCP Server] Client {} disconnected", id);
+            tracing::info!("[TCP Server] Client {} disconnected", id);
         }
     }
 
-    /// Get the number of connected clients
     pub async fn client_count(&self) -> usize {
         self.connections.read().await.len()
     }
 
-    /// Stop the server
     pub fn stop(&self) {
         self.running.store(false, Ordering::Relaxed);
     }
@@ -171,7 +163,6 @@ impl TcpServer {
     }
 }
 
-/// TCP client for connecting to a server
 #[derive(Clone)]
 pub struct TcpClient {
     connection: Option<Arc<TcpConnection>>,

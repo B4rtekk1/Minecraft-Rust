@@ -83,36 +83,25 @@ impl BlockType {
     }
 
     pub fn should_render_face_against(&self, neighbor: BlockType) -> bool {
-        // Air always exposes faces
         if neighbor == BlockType::Air {
             return true;
         }
-
-        // Water only renders faces against Air (already handled above)
-        // Water doesn't render internal faces between water blocks
-        // nor faces against solid blocks (they're underwater and invisible)
         if *self == BlockType::Water {
             return false;
         }
 
-        // Solid blocks render faces against water (so you can see underwater terrain)
         if neighbor == BlockType::Water {
             return true;
         }
 
-        // Leaves render against other leaves for proper foliage look
         if *self == BlockType::Leaves && neighbor == BlockType::Leaves {
             return true;
         }
 
-        // For stairs, we generally want to render faces even against other blocks
-        // because of the unique shape, unless it's perfectly covered.
-        // For simplicity, let's say stairs expose everyone's face
         if neighbor == BlockType::WoodStairs {
             return true;
         }
 
-        // Otherwise, render faces against transparent blocks
         neighbor.is_transparent()
     }
 
@@ -170,7 +159,7 @@ impl BlockType {
         match self {
             BlockType::Grass => TEX_DIRT,
             BlockType::Wood => TEX_WOOD_TOP,
-            BlockType::WoodStairs => TEX_WOOD_TOP, // Use top texture for bottom of stairs too? Or side?
+            BlockType::WoodStairs => TEX_WOOD_TOP,
             _ => self.tex_top(),
         }
     }

@@ -1,8 +1,3 @@
-/// UI Rendering Shader
-///
-/// This shader is used for rendering 2D user interface elements.
-/// It uses a simplified vertex projection that maps directly to screen space.
-
 struct Uniforms {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
@@ -42,10 +37,6 @@ struct VertexOutput {
     @location(2) tex_index: f32,
 };
 
-/// UI Vertex Shader
-///
-/// Pass-through shader for 2D positions. 
-/// Assumes model.position is already in normalized device coordinates (NDC).
 @vertex
 fn vs_ui(model: VertexInput) -> VertexOutput {
     var out: VertexOutput;
@@ -56,9 +47,6 @@ fn vs_ui(model: VertexInput) -> VertexOutput {
     return out;
 }
 
-/// UI Fragment Shader
-///
-/// Renders UI elements using their vertex color.
 @fragment
 fn fs_ui(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color, 1.0);

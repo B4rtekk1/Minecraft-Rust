@@ -1,27 +1,5 @@
-//! In-game HUD and specialized vector-based text rendering.
-//!
-//! This module provides the logic for drawing overlay elements like coordinates
-//! using a custom segment-based font rendering system. This allows for high-performance
-//! text rendering without requiring large font atlas textures or external glyph crates.
-
-// TODO: Add more UI elements
-
 use render3d::Vertex;
 use wgpu::util::DeviceExt;
-
-/// Updates the coordinate display UI.
-///
-/// This function generates vertex and index buffers for rendering the current camera coordinates
-/// on the screen. It uses a custom segment-based font rendering system to avoid external dependencies.
-///
-/// # Arguments
-/// * `device` - The WGPU device used to create buffers.
-/// * `camera_pos` - Current position of the camera to display.
-/// * `last_coords_position` - Cached last position to avoid redundant buffer updates.
-///
-/// # Returns
-/// Returns `Some((vertex_buffer, index_buffer, index_count))` if the coordinates have changed
-/// and the buffers were successfully recreated, or `None` if no update is needed or possible.
 pub fn update_coords_ui(
     device: &wgpu::Device,
     camera_pos: cgmath::Point3<f32>,
@@ -152,10 +130,6 @@ pub fn update_coords_ui(
     Some((vb, ib, indices.len() as u32))
 }
 
-/// Returns the geometric segments required to draw a specific character.
-///
-/// Each segment is represented as a tuple of `(x1, y1, x2, y2)` in a specialized coordinate system
-/// where (0,0) is the bottom-left of the character and (1,1) is the top-right.
 fn get_char_segments(ch: char) -> Vec<(f32, f32, f32, f32)> {
     let seg_top = (0.0, 1.0, 1.0, 1.0);
     let seg_tr = (1.0, 1.0, 1.0, 0.5);

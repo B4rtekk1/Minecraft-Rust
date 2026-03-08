@@ -1,80 +1,56 @@
-/// Water Rendering Shader - Physically-Based Realistic Water (Optimized)
-///
-/// Performance fixes over prev version:
-/// - SSR back to 32 steps, binary search reduced to 4 steps (conditional)
-/// - reconstruct_world_pos called ONCE, result reused for depth + refraction
-/// - foam_noise uses 2-octave value noise (no sin per-octave), no floor aliasing
-/// - Removed second depth-buffer sample in refraction validation (replaced with cheap water_level test)
-
-// ============================================================================
-// CONSTANTS
-// ============================================================================
 const PI: f32 = 3.14159265359;
 const TWO_PI: f32 = 6.28318530718;
 const SHADOW_MAP_SIZE: f32 = 2048.0;
-const PCF_SAMPLES: i32 = 16;
+const PCF_SAMPLES: i32 = 20;
 
-// SSR — tuned for performance/quality balance
 const SSR_MAX_STEPS: i32 = 32;
-const SSR_BINARY_STEPS: i32 = 4;       // Refinement steps (only on hit) — was 8
+const SSR_BINARY_STEPS: i32 = 4;
 const SSR_MAX_DISTANCE: f32 = 60.0;
-const SSR_THICKNESS_BASE: f32 = 0.005; // Reduced from 0.04 to fix "stairs" in reflections
+const SSR_THICKNESS_BASE: f32 = 0.005;
 const SSR_EARLY_EXIT_CONFIDENCE: f32 = 0.92;
-const SSR_EDGE_FADE: f32 = 0.08;       // Screen-edge fade fraction
+const SSR_EDGE_FADE: f32 = 0.08;
 
-// LOD
 const LOD_NEAR: f32 = 0.0;
 const LOD_FAR: f32 = 100.0;
 const NORMAL_BLEND_DISTANCE: f32 = 100.0;
 const NORMAL_BLEND_MIN: f32 = 0.3;
 const SSR_FADE_DISTANCE: f32 = 150.0;
 
-// Water appearance
 const WATER_LEVEL_OFFSET: f32 = 0.15;
 const FRESNEL_R0: f32 = 0.02;
 const REFRACTION_STRENGTH: f32 = 0.025;
 const REFRACTION_MIX: f32 = 0.55;
 
-// Beer's law absorption
 const ABSORPTION_R: f32 = 0.45;
 const ABSORPTION_G: f32 = 0.07;
 const ABSORPTION_B: f32 = 0.04;
 const SCATTER_COLOR: vec3<f32> = vec3<f32>(0.04, 0.16, 0.22);
 const SHALLOW_COLOR: vec3<f32> = vec3<f32>(0.1, 0.4, 0.35);
 
-// Foam
 const FOAM_THRESHOLD: f32 = 0.35;
 const FOAM_INTENSITY: f32 = 0.75;
-const FOAM_EDGE_WIDTH: f32 = 0.5;   // world-units depth for shoreline foam
+const FOAM_EDGE_WIDTH: f32 = 0.5;
 
-// Subsurface scattering
 const SSS_STRENGTH: f32 = 0.28;
 const SSS_DISTORTION: f32 = 0.15;
 const SSS_POWER: f32 = 3.0;
 const SSS_COLOR: vec3<f32> = vec3<f32>(0.1, 0.6, 0.45);
 
-// GGX specular
 const WATER_ROUGHNESS: f32 = 0.04;
 
-// Lighting
 const AMBIENT_DAY: f32 = 0.4;
 const AMBIENT_NIGHT: f32 = 0.008;
 const SHADOW_CONTRIBUTION: f32 = 0.6;
 
-// Fog
 const UNDERWATER_VISIBILITY: f32 = 20.0;
 const FOG_VISIBILITY_NIGHT: f32 = 20.0;
 const FOG_VISIBILITY_DAY: f32 = 250.0;
 const FOG_START_RATIO: f32 = 0.2;
 
-// Shadow bias
-const SHADOW_BASE_BIAS: f32 = 0.003; // Matched with terrain.wgsl
-const SHADOW_SLOPE_BIAS: f32 = 0.004; // Matched with terrain.wgsl
+const SHADOW_BASE_BIAS: f32 = 0.001;
+const SHADOW_SLOPE_BIAS: f32 = 0.003;
 const SHADOW_EDGE_FADE: f32 = 0.03;
 
-// ============================================================================
-// UNIFORMS
-// ============================================================================
 struct Uniforms {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
@@ -100,9 +76,6 @@ struct Uniforms {
 @group(0) @binding(6) var ssr_depth: texture_depth_2d;
 @group(0) @binding(7) var ssr_sampler: sampler;
 
-// ============================================================================
-// VERTEX/FRAGMENT STRUCTS
-// ============================================================================
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec4<f32>,
@@ -122,9 +95,6 @@ struct VertexOutput {
     @location(6) original_pos: vec2<f32>,
 };
 
-// ============================================================================
-// GERSTNER WAVES
-// ============================================================================
 const WAVE_K:     array<f32, 6> = array(0.5236, 0.6832, 0.9975, 1.6988, 2.9920, 4.4880);
 const WAVE_C:     array<f32, 6> = array(0.3461, 0.2280, 0.3130, 0.4325, 0.4531, 0.4434);
 const WAVE_AMP:   array<f32, 6> = array(0.08,   0.045,  0.035,  0.018,  0.013,  0.01);
@@ -146,15 +116,10 @@ fn hash2(p: vec2<f32>) -> vec2<f32> {
     return fract(sin(q) * 43758.5453) * 2.0 - 1.0;
 }
 
-// ============================================================================
-// FOAM NOISE — 2-octave smooth value noise, no floor() aliasing
-// Uses only fract/dot, no extra sin() per octave after the first
-// ============================================================================
 fn value_noise2(p: vec2<f32>) -> f32 {
     let i = floor(p);
     let f = fract(p);
-    let u = f * f * (3.0 - 2.0 * f);   // smoothstep
-    // Hash via single dot-based approach (cheap, no sin loop)
+    let u = f * f * (3.0 - 2.0 * f);
     let h = vec4(
         fract(dot(i,              vec2(127.1, 311.7)) * 43758.5453),
         fract(dot(i + vec2(1.0, 0.0), vec2(127.1, 311.7)) * 43758.5453),
@@ -166,15 +131,11 @@ fn value_noise2(p: vec2<f32>) -> f32 {
 
 fn foam_noise_fast(p: vec2<f32>, time: f32) -> f32 {
     let t = time * 0.25;
-    // 2 octaves only — good enough for foam, much cheaper than 3
     let n1 = value_noise2(p * 1.8 + vec2(t * 0.6,  t * 0.25));
     let n2 = value_noise2(p * 3.7 - vec2(t * 0.4,  t * 0.7));
     return n1 * 0.65 + n2 * 0.35;
 }
 
-// ============================================================================
-// GRADIENT NOISE WITH ANALYTICAL DERIVATIVES (for water normals)
-// ============================================================================
 fn gradient_noise_deriv(p: vec2<f32>) -> vec3<f32> {
     let i = floor(p);
     let f = fract(p);
@@ -301,9 +262,6 @@ fn calculate_gerstner_dual(pos: vec3<f32>, time: f32, camera_pos: vec3<f32>) -> 
     return result;
 }
 
-// ============================================================================
-// VERTEX SHADER
-// ============================================================================
 @vertex
 fn vs_water(model: VertexInput) -> VertexOutput {
     var out: VertexOutput;
@@ -311,15 +269,13 @@ fn vs_water(model: VertexInput) -> VertexOutput {
     out.original_pos = pos.xz;
 
     if model.normal.y > 0.5 {
-        // Top face: apply full Gerstner wave displacement + lower to water surface
         let waves = calculate_gerstner_dual(pos, uniforms.time, uniforms.camera_pos);
         pos.x += waves.displacement.x;
         pos.z += waves.displacement.z;
         pos.y += waves.displacement.y - WATER_LEVEL_OFFSET;
     } else {
-        // Side faces: apply wave displacement at the top edge (uv.y == 0)
-        // This ensures the side wall matches the animated top surface.
-        let top_edge = 1.0 - model.uv.y; // 1.0 at top edge, 0.0 at bottom edge
+
+        let top_edge = 1.0 - model.uv.y;
         if top_edge > 0.001 {
              let waves = calculate_gerstner_dual(pos, uniforms.time, uniforms.camera_pos);
              pos.x += waves.displacement.x * top_edge;
@@ -337,9 +293,6 @@ fn vs_water(model: VertexInput) -> VertexOutput {
     return out;
 }
 
-// ============================================================================
-// UTILITY FUNCTIONS
-// ============================================================================
 fn schlick_fresnel(cos_theta: f32, r0: f32) -> f32 {
     let x = 1.0 - cos_theta;
     let x2 = x * x;
@@ -417,7 +370,6 @@ fn get_poisson_sample(idx: i32, rotation: f32) -> vec2<f32> {
     return vec2(p.x * c - p.y * s, p.x * s + p.y * c);
 }
 
-/// Sample PCF from one cascade; returns shadow factor in [0,1] (0=shadowed, 1=lit).
 fn sample_cascade_pcf(
     world_pos: vec3<f32>,
     cascade_idx: i32,
@@ -429,7 +381,6 @@ fn sample_cascade_pcf(
     let shadow_coords = shadow_pos.xyz / shadow_pos.w;
     let uv = vec2(shadow_coords.x * 0.5 + 0.5, 1.0 - (shadow_coords.y * 0.5 + 0.5));
 
-    // Outside frustum → fully lit
     if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 { return 1.0; }
 
     let edge_factor       = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y)) / SHADOW_EDGE_FADE;
@@ -450,8 +401,6 @@ fn sample_cascade_pcf(
     return mix(1.0, shadow, edge_shadow_blend);
 }
 
-/// Select cascade index + blend weight (0=fully current, 1=fully next).
-/// 10 % blend zone eliminates hard seam jitter at cascade boundaries.
 fn select_cascade_with_blend(view_depth: f32) -> vec2<f32> {
     let bf = 0.10;
     let s0 = uniforms.csm_split_distances.x;
@@ -470,9 +419,6 @@ fn select_cascade_with_blend(view_depth: f32) -> vec2<f32> {
     return vec2(3.0, 0.0);
 }
 
-// ============================================================================
-// DEPTH RECONSTRUCTION — called ONCE per fragment, result reused everywhere
-// ============================================================================
 fn reconstruct_world_pos(screen_uv: vec2<f32>, ndc_depth: f32) -> vec3<f32> {
     let ndc = vec4(
         screen_uv.x * 2.0 - 1.0,
@@ -484,9 +430,6 @@ fn reconstruct_world_pos(screen_uv: vec2<f32>, ndc_depth: f32) -> vec3<f32> {
     return world_h.xyz / world_h.w;
 }
 
-// ============================================================================
-// SKY COLOR
-// ============================================================================
 fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
     let sun_height = sun_dir.y;
     let day_factor = clamp(sun_height, 0.0, 1.0);
@@ -546,9 +489,6 @@ fn calculate_sky_color(view_dir: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
     return clamp(sky_color, vec3(0.0), vec3(1.5));
 }
 
-// ============================================================================
-// SSR — 32 linear steps + 4-step binary search on hit + screen-edge fade
-// ============================================================================
 fn ssr_trace(world_pos: vec3<f32>, reflect_dir: vec3<f32>) -> vec4<f32> {
     let dir = normalize(reflect_dir);
     var ray_world = world_pos + dir * 0.2;
@@ -579,7 +519,6 @@ fn ssr_trace(world_pos: vec3<f32>, reflect_dir: vec3<f32>) -> vec4<f32> {
         let thickness = SSR_THICKNESS_BASE + step_dist * 0.1;
 
         if depth_diff > 0.0 && depth_diff < thickness {
-            // Binary search refinement — 4 steps only
             var lo = prev_ray_world;
             var hi = ray_world;
             for (var b: i32 = 0; b < SSR_BINARY_STEPS; b++) {
@@ -599,9 +538,6 @@ fn ssr_trace(world_pos: vec3<f32>, reflect_dir: vec3<f32>) -> vec4<f32> {
                 let fs  = textureSample(ssr_depth, ssr_sampler, fu);
                 let fd  = abs(fn_.z - fs);
                 if fd < thickness {
-                    // Reject hits from geometry ABOVE water level when reflecting upward.
-                    // This prevents leaves/trees (seen through alpha-cutout transparency)
-                    // from creating false SSR reflections on the water surface.
                     let hit_world = reconstruct_world_pos(fu, fs);
                     let is_above_water = hit_world.y > uniforms.water_level + 0.5;
                     let reflects_upward = dir.y > -0.05;
@@ -610,7 +546,6 @@ fn ssr_trace(world_pos: vec3<f32>, reflect_dir: vec3<f32>) -> vec4<f32> {
                         hit_confidence = 1.0 - fd / thickness;
                         found_hit = true;
                     }
-                    // Whether we accepted or rejected, stop tracing (we hit something solid)
                     break;
                 }
             }
@@ -621,7 +556,6 @@ fn ssr_trace(world_pos: vec3<f32>, reflect_dir: vec3<f32>) -> vec4<f32> {
     }
 
     if found_hit && hit_confidence > 0.05 {
-        // Screen-edge fade — smooth away hard border artifacts
         let edge_dist = min(min(hit_uv.x, 1.0 - hit_uv.x), min(hit_uv.y, 1.0 - hit_uv.y));
         let edge_fade = smoothstep(0.0, SSR_EDGE_FADE, edge_dist);
         let final_conf = smoothstep(0.05, 0.9, hit_confidence) * edge_fade;
@@ -632,9 +566,6 @@ fn ssr_trace(world_pos: vec3<f32>, reflect_dir: vec3<f32>) -> vec4<f32> {
     return vec4(0.0);
 }
 
-// ============================================================================
-// SHADOWS
-// ============================================================================
 fn calculate_shadow(
     world_pos: vec3<f32>,
     normal: vec3<f32>,
@@ -654,21 +585,20 @@ fn calculate_shadow(
     let cb          = select_cascade_with_blend(view_depth);
     let cascade_idx = i32(cb.x);
     let blend       = cb.y;
+    let cascade_bias_scale = 1.0 + f32(cascade_idx) * 0.5;
+    let scaled_bias = bias * cascade_bias_scale;
 
-    let shadow_a = sample_cascade_pcf(world_pos, cascade_idx, bias, rotation_phi, filter_radius);
+    let shadow_a = sample_cascade_pcf(world_pos, cascade_idx, scaled_bias, rotation_phi, filter_radius);
     if blend > 0.001 && cascade_idx < 3 {
-        let shadow_b = sample_cascade_pcf(world_pos, cascade_idx + 1, bias, rotation_phi, filter_radius);
+        let next_bias = bias * (1.0 + f32(cascade_idx + 1) * 0.5);
+        let shadow_b = sample_cascade_pcf(world_pos, cascade_idx + 1, next_bias, rotation_phi, filter_radius);
         return mix(shadow_a, shadow_b, blend);
     }
     return shadow_a;
 }
 
-// ============================================================================
-// FRAGMENT SHADER
-// ============================================================================
 @fragment
 fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
-    // ---- Setup ----
     let to_camera      = uniforms.camera_pos - in.world_pos;
     let dist_to_camera = length(to_camera);
     let view_dir = to_camera / dist_to_camera;
@@ -679,46 +609,33 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     let clip_ndc   = in.clip_position.xyz * inv_clip_w;
     let screen_uv  = vec2(clip_ndc.x * 0.5 + 0.5, 0.5 - clip_ndc.y * 0.5);
 
-    // ---- Waves ----
     let original_world = vec3(in.original_pos.x, in.world_pos.y, in.original_pos.y);
     let waves = calculate_gerstner_dual(original_world, uniforms.time, uniforms.camera_pos);
     let normal_blend  = clamp(1.0 - dist_to_camera / NORMAL_BLEND_DISTANCE, NORMAL_BLEND_MIN, 1.0);
     let water_normal  = normalize(mix(in.normal, waves.normal, normal_blend));
 
-    // ---- Fresnel ----
     let cos_theta = max(dot(view_dir, water_normal), 0.0);
     let fresnel   = schlick_fresnel(cos_theta, FRESNEL_R0);
 
-    // ============================================================
-    // SINGLE depth sample + ONE world-space reconstruction
-    // Result is reused for: water_depth, Beer's law, and refraction
-    // ============================================================
     let scene_ndc_depth = textureSample(ssr_depth, ssr_sampler, screen_uv);
-    // Reconstruct scene world-space position (correct linearization via inv_view_proj)
     let scene_world_pos  = reconstruct_world_pos(screen_uv, scene_ndc_depth);
     let scene_lin_depth  = length(scene_world_pos - uniforms.camera_pos);
     let water_lin_depth  = dist_to_camera;
     let water_depth      = max(scene_lin_depth - water_lin_depth, 0.0);
 
-    // Beer's law absorption
     let absorption = calculate_absorption(water_depth);
 
-    // ---- Base color + depth-tint ----
     var base_water = textureSample(texture_atlas, texture_sampler, in.uv, i32(in.tex_index + 0.5)).rgb;
     let depth_color = mix(SHALLOW_COLOR, SCATTER_COLOR, clamp(water_depth * 0.1, 0.0, 1.0));
     base_water = mix(base_water, depth_color, clamp(water_depth * 0.2, 0.0, 0.75));
 
-    // ---- Refraction ----
-    // Cheap validity check: if reconstructed scene Y is above water, skip distortion
     let refract_scale  = REFRACTION_STRENGTH * (1.0 + clamp(water_depth * 0.04, 0.0, 0.4));
     let refract_offset = water_normal.xz * refract_scale * (1.0 - fresnel * 0.7);
-    // Only apply offset when the scene surface is below water level (no second depth sample)
     let use_refract    = scene_world_pos.y < uniforms.water_level + 0.2;
     let refract_uv     = clamp(screen_uv + select(vec2(0.0), refract_offset, use_refract), vec2(0.0), vec2(1.0));
     let refract_color  = textureSample(ssr_color, ssr_sampler, refract_uv).rgb * absorption;
     base_water = mix(base_water, refract_color * 0.75, REFRACTION_MIX * (1.0 - fresnel));
 
-    // ---- Reflection ----
     var reflect_dir = reflect(-view_dir, water_normal);
     reflect_dir.y   = max(reflect_dir.y, 0.001);
     reflect_dir     = normalize(reflect_dir);
@@ -736,7 +653,6 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // ---- Shadow ----
     var shadow = 1.0;
     let sun_up = sun_dir.y > 0.0;
     if sun_up {
@@ -746,12 +662,10 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     let ambient = mix(AMBIENT_NIGHT, AMBIENT_DAY, day_factor);
     var water_color = mix(base_water, reflection_color, fresnel);
 
-    // ---- SSS ----
     if day_factor > 0.05 {
         water_color += calculate_sss(water_normal, view_dir, sun_dir, waves.wave_height, day_factor) * shadow;
     }
 
-    // ---- Specular ----
     if sun_up {
         let sun_color = vec3(1.0, 0.98, 0.9) * shadow * day_factor;
         let n_dot_l = max(dot(water_normal, sun_dir), 0.0);
@@ -766,7 +680,6 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
         water_color += sun_color * spec;
     }
 
-    // ---- Moon specular ----
     let night_factor = clamp(-sun_dir.y, 0.0, 1.0);
     if night_factor > 0.2 {
         let moon_dir = normalize(vec3(0.3, 0.5, -0.8));
@@ -776,7 +689,6 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
 
     water_color *= (ambient + shadow * SHADOW_CONTRIBUTION * day_factor);
 
-    // ---- Foam — smooth 2-octave noise + shoreline foam ----
     let shoreline_foam = clamp(1.0 - water_depth / FOAM_EDGE_WIDTH, 0.0, 1.0);
     let total_foam = clamp(waves.foam + shoreline_foam * 0.55, 0.0, 1.0);
     if total_foam > 0.01 {
@@ -785,7 +697,6 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
         water_color = mix(water_color, lit_foam, clamp(total_foam * (0.55 + fn_val * 0.45), 0.0, 0.85));
     }
 
-    // ---- Fog ----
     let dist_xz = length(in.world_pos.xz - uniforms.camera_pos.xz);
     var visibility_range: f32;
     var fog_color_final: vec3<f32>;
@@ -800,7 +711,6 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
     let visibility = clamp((visibility_range - dist_xz) / (visibility_range - fog_start), 0.0, 1.0);
     var final_color = mix(fog_color_final, water_color, visibility);
 
-    // ---- Underwater ----
     if is_underwater {
         final_color *= vec3(0.4, 0.75, 1.0);
         let t  = uniforms.time;

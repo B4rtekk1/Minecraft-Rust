@@ -4,10 +4,10 @@ use crate::core::block::BlockType;
 pub struct Structure {
     pub name: String,
     pub biomes: Vec<String>,
-    pub min_height: Option<i32>, // minimum spawn y coordinate
-    pub max_height: Option<i32>, // maximum spawn y coordinate
+    pub min_height: Option<i32>,
+    pub max_height: Option<i32>,
     pub in_water: bool,
-    pub min_distance: Option<i32>, // minimum distance between structures
+    pub min_distance: Option<i32>,
     pub blocks: Vec<(i32, i32, i32, BlockType)>,
 }
 

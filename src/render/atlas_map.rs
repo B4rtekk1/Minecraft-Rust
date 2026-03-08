@@ -1,10 +1,10 @@
-use image::GenericImageView;
+#![allow(dead_code)]
 
 struct Atlas {
     width: u32,
     height: u32,
     tiles_per_row: u32,
-    data: Vec<u8>
+    data: Vec<u8>,
 }
 
 fn load_textures(paths: &[&str], tile_size: u32) -> Vec<Vec<u8>> {
@@ -42,6 +42,6 @@ fn create_atlas(tile_size: u32, textures: &[Vec<u8>]) -> Atlas {
         width: atlas_size,
         height: atlas_size,
         tiles_per_row,
-        data
+        data,
     }
 }

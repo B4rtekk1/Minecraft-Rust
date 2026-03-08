@@ -18,7 +18,6 @@ impl State {
                 msaa_sample_count,
             );
 
-            // Recreate SSR textures at new size
             self.ssr_color_texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("SSR Color Texture"),
                 size: wgpu::Extent3d {
@@ -172,7 +171,6 @@ impl State {
                 ],
             });
 
-            // Recreate Hi-Z pyramid to match new render resolution
             let new_hiz_size = [new_size.width, new_size.height];
             if new_hiz_size != self.hiz_size {
                 self.hiz_size = new_hiz_size;
@@ -194,8 +192,7 @@ impl State {
                         | wgpu::TextureUsages::RENDER_ATTACHMENT,
                     view_formats: &[],
                 });
-                let new_hiz_view =
-                    hiz_texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let new_hiz_view = hiz_texture.create_view(&wgpu::TextureViewDescriptor::default());
                 let new_hiz_mips: Vec<_> = (0..hiz_mips_count)
                     .map(|i| {
                         hiz_texture.create_view(&wgpu::TextureViewDescriptor {
@@ -240,4 +237,3 @@ impl State {
         }
     }
 }
-

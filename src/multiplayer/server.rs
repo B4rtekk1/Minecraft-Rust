@@ -1,13 +1,12 @@
+#![allow(dead_code)]
+
 use crate::multiplayer::protocol::{Packet, PlayerId};
-use crate::multiplayer::quic::QuicServer;
-use crate::multiplayer::tcp::TcpServer;
 use crate::multiplayer::transport::TransportType;
 use std::collections::HashMap;
 use std::io::Result;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 
-/// Player information stored on the server
 #[derive(Debug, Clone)]
 pub struct PlayerInfo {
     pub id: PlayerId,
@@ -19,7 +18,6 @@ pub struct PlayerInfo {
     pub pitch: u8,
 }
 
-/// Events emitted by the server
 #[derive(Debug, Clone)]
 pub enum ServerEvent {
     PlayerConnected(PlayerId, String),
@@ -30,7 +28,6 @@ pub enum ServerEvent {
     ChatMessage(PlayerId, String),
 }
 
-/// Game server that manages player connections
 pub struct GameServer {
     transport_type: TransportType,
     players: Arc<RwLock<HashMap<PlayerId, PlayerInfo>>>,
@@ -50,17 +47,14 @@ impl GameServer {
         }
     }
 
-    /// Take the event receiver (can only be called once)
     pub fn take_event_receiver(&mut self) -> Option<mpsc::UnboundedReceiver<ServerEvent>> {
         self.event_rx.take()
     }
 
-    /// Get transport type
     pub fn transport_type(&self) -> TransportType {
         self.transport_type
     }
 
-    /// Handle an incoming packet from a player
     pub async fn handle_packet(&self, player_id: PlayerId, packet: Packet) -> Result<()> {
         match packet {
             Packet::Connect { username, .. } => {
@@ -147,7 +141,6 @@ impl GameServer {
         Ok(())
     }
 
-    /// Remove a player from the server
     pub async fn remove_player(&self, player_id: PlayerId) {
         let mut players = self.players.write().await;
         players.remove(&player_id);
@@ -156,19 +149,16 @@ impl GameServer {
             .send(ServerEvent::PlayerDisconnected(player_id));
     }
 
-    /// Get all connected players
     pub async fn get_players(&self) -> Vec<PlayerInfo> {
         let players = self.players.read().await;
         players.values().cloned().collect()
     }
 
-    /// Get player count
     pub async fn player_count(&self) -> usize {
         self.players.read().await.len()
     }
 }
 
-/// Configuration for starting a server
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub address: String,

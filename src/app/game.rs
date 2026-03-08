@@ -3,14 +3,14 @@ use std::time::Instant;
 use clap::Parser;
 use winit::{
     dpi::PhysicalPosition,
-    event::{DeviceEvent, ElementState, Event, KeyEvent, MouseButton, WindowEvent},
+    event::{DeviceEvent, ElementState, Event, KeyEvent, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, WindowBuilder},
 };
 
 use render3d::{
-    SavedWorld, World, DEFAULT_WORLD_FILE, CHUNK_SIZE, SUBCHUNK_HEIGHT, load_world, save_world,
+    CHUNK_SIZE, DEFAULT_WORLD_FILE, SUBCHUNK_HEIGHT, SavedWorld, World, load_world, save_world,
 };
 
 use crate::ui::menu::GameState;
@@ -21,38 +21,30 @@ use super::state::State;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Start as a server (host a game)
     #[arg(long, default_value_t = false)]
     server: bool,
 
-    /// Port to bind the server to (default: 25565)
     #[arg(long, default_value_t = 25565)]
     port: u16,
 }
 
-/// Main game entry point - call this from the actual main() function
 pub fn run_game() {
     let args = Args::parse();
 
     if args.server {
         let addr = format!("0.0.0.0:{}", args.port);
-        tracing::info!("====================================================");
         tracing::info!("Starting Headless Dedicated Server on {}...", addr);
         tracing::info!("Note: This is a console-only server. No game window will appear.");
         tracing::info!("To play the game, run the application without --server.");
         tracing::info!("Press Ctrl+C to stop the server.");
-        tracing::info!("====================================================");
-
         use std::io::Write;
         std::io::stdout().flush().unwrap();
 
-        let rt = tokio::runtime::Runtime::new()
-            .expect("Failed to create tokio runtime.");
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime.");
         rt.block_on(run_dedicated_server(&addr));
         return;
     }
 
-    // Client mode
     let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new()
         .with_title("Mini Minecraft 256x256 | Loading...")
@@ -230,7 +222,8 @@ pub fn run_game() {
                                             let cx = chunk_data.cx;
                                             let cz = chunk_data.cz;
                                             for (&sy, block_data) in &chunk_data.subchunks {
-                                                if let Some(chunk) = world.chunks.get_mut(&(cx, cz)) {
+                                                if let Some(chunk) = world.chunks.get_mut(&(cx, cz))
+                                                {
                                                     if (sy as usize) < chunk.subchunks.len() {
                                                         let subchunk =
                                                             &mut chunk.subchunks[sy as usize];
@@ -239,8 +232,8 @@ pub fn run_game() {
                                                             for ly in 0..SUBCHUNK_HEIGHT as usize {
                                                                 for lz in 0..CHUNK_SIZE as usize {
                                                                     if n < block_data.len() {
-                                                                        subchunk.blocks[lx][ly][lz] =
-                                                                            block_data[n];
+                                                                        subchunk.blocks[lx][ly]
+                                                                            [lz] = block_data[n];
                                                                         n += 1;
                                                                     }
                                                                 }
@@ -318,8 +311,7 @@ pub fn run_game() {
                 Event::AboutToWait => {
                     let is_idle = state.last_input_time.elapsed().as_secs() >= 30;
                     if is_idle {
-                        let next_frame =
-                            Instant::now() + std::time::Duration::from_millis(33);
+                        let next_frame = Instant::now() + std::time::Duration::from_millis(33);
                         elwt.set_control_flow(ControlFlow::WaitUntil(next_frame));
                     } else {
                         elwt.set_control_flow(ControlFlow::Poll);

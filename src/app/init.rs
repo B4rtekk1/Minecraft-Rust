@@ -14,7 +14,7 @@ use crate::app::texture_cache;
 use crate::ui::menu::{GameState, MenuState};
 use render3d::chunk_loader::ChunkLoader;
 use render3d::{
-    build_crosshair, Camera, DiggingState, IndirectManager, InputState, Uniforms, Vertex, World,
+    Camera, DiggingState, IndirectManager, InputState, Uniforms, Vertex, World, build_crosshair,
 };
 
 use super::state::State;
@@ -27,8 +27,6 @@ pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = Matrix4::new(
     0.0, 0.0, 0.5, 1.0,
 );
 
-/// Convert cgmath Vector4 frustum planes to [[f32; 4]; 6] for GPU culling shader.
-/// SAFETY: cgmath::Vector4<f32> is #[repr(C)] with layout identical to [f32; 4].
 #[inline(always)]
 pub fn frustum_planes_to_array(planes: &[cgmath::Vector4<f32>; 6]) -> [[f32; 4]; 6] {
     unsafe { std::mem::transmute(*planes) }
@@ -43,8 +41,6 @@ impl State {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
-        tracing::info!("WGPU Instance created successfully");
-
         let surface = instance.create_surface(window.clone()).unwrap();
 
         let adapter = instance
@@ -62,11 +58,6 @@ impl State {
             info.name,
             info.backend
         );
-        if info.device_type == wgpu::DeviceType::Cpu {
-            tracing::warn!(
-                "Warning: Running on CPU (Software Renderer). Performance will be poor."
-            );
-        }
 
         let adapter_features = adapter.features();
         let supports_indirect_count =
@@ -76,10 +67,6 @@ impl State {
         } else {
             wgpu::Features::empty()
         };
-        tracing::info!(
-            "MULTI_DRAW_INDIRECT_COUNT supported: {}",
-            supports_indirect_count
-        );
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -113,7 +100,6 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        // MSAA sample count (4x MSAA for quality anti-aliasing)
         let msaa_sample_count: u32 = 4;
 
         let depth_texture = Self::create_depth_texture(&device, &config, msaa_sample_count);
@@ -179,8 +165,8 @@ impl State {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear, // Nearest -> Linear
-            anisotropy_clamp: 16,                          // 1 -> 16
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            anisotropy_clamp: 16,
             ..Default::default()
         });
 
@@ -299,7 +285,6 @@ impl State {
                 }],
             });
 
-        // SSR textures
         let ssr_color_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("SSR Color Texture"),
             size: wgpu::Extent3d {
@@ -314,8 +299,7 @@ impl State {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let ssr_color_view =
-            ssr_color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let ssr_color_view = ssr_color_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let ssr_depth_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("SSR Depth Texture"),
@@ -331,8 +315,7 @@ impl State {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let ssr_depth_view =
-            ssr_depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let ssr_depth_view = ssr_depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let ssr_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("SSR Sampler"),
@@ -658,7 +641,11 @@ impl State {
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 2.0,
+                    clamp: 0.0,
+                },
             }),
             multisample: wgpu::MultisampleState {
                 count: 1,
@@ -753,10 +740,34 @@ impl State {
         let sun_normal = Vertex::pack_normal([0.0, 0.0, 1.0]);
         let sun_color = Vertex::pack_color([1.0, 1.0, 1.0]);
         let sun_vertices = vec![
-            Vertex { position: [-1.0, -1.0, 0.0], normal: sun_normal, color: sun_color, uv: [0.0, 0.0], tex_index: 0.0 },
-            Vertex { position: [1.0, -1.0, 0.0], normal: sun_normal, color: sun_color, uv: [1.0, 0.0], tex_index: 0.0 },
-            Vertex { position: [1.0, 1.0, 0.0], normal: sun_normal, color: sun_color, uv: [1.0, 1.0], tex_index: 0.0 },
-            Vertex { position: [-1.0, 1.0, 0.0], normal: sun_normal, color: sun_color, uv: [0.0, 1.0], tex_index: 0.0 },
+            Vertex {
+                position: [-1.0, -1.0, 0.0],
+                normal: sun_normal,
+                color: sun_color,
+                uv: [0.0, 0.0],
+                tex_index: 0.0,
+            },
+            Vertex {
+                position: [1.0, -1.0, 0.0],
+                normal: sun_normal,
+                color: sun_color,
+                uv: [1.0, 0.0],
+                tex_index: 0.0,
+            },
+            Vertex {
+                position: [1.0, 1.0, 0.0],
+                normal: sun_normal,
+                color: sun_color,
+                uv: [1.0, 1.0],
+                tex_index: 0.0,
+            },
+            Vertex {
+                position: [-1.0, 1.0, 0.0],
+                normal: sun_normal,
+                color: sun_color,
+                uv: [0.0, 1.0],
+                tex_index: 0.0,
+            },
         ];
         let sun_indices: Vec<u32> = vec![0, 1, 2, 0, 2, 3];
 
@@ -765,7 +776,7 @@ impl State {
             contents: bytemuck::cast_slice(&sun_vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let sun_index_buffer = device.  create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let sun_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Sun Index Buffer"),
             contents: bytemuck::cast_slice(&sun_indices),
             usage: wgpu::BufferUsages::INDEX,
@@ -776,7 +787,6 @@ impl State {
         let spawn = world.read().find_spawn_point();
         let camera = Camera::new(spawn);
         tracing::info!("World generated! Spawn: {:?}", spawn);
-
 
         let seed = world.read().seed;
         let chunk_loader = ChunkLoader::new(seed);
@@ -821,12 +831,9 @@ impl State {
         let fps_buffer = glyphon::Buffer::new(&mut font_system, Metrics::new(40.0, 48.0));
         let menu_buffer = glyphon::Buffer::new(&mut font_system, Metrics::new(24.0, 32.0));
 
-        // ============== DEPTH RESOLVE INITIALIZATION ==============
         let depth_resolve_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Depth Resolve Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../shaders/depth_resolve.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/depth_resolve.wgsl").into()),
         });
         let depth_resolve_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -892,7 +899,6 @@ impl State {
                 multiview_mask: None,
             });
 
-        // ============== POST-PROCESS INITIALIZATION ==============
         let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Composite Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/composite.wgsl").into()),
@@ -1012,7 +1018,6 @@ impl State {
         indirect_manager.init_shadow_resources(&device);
         water_indirect_manager.init_shadow_resources(&device);
 
-        // Hi-Z
         let hiz_size = [config.width, config.height];
         let hiz_max_dim = config.width.max(config.height);
         let hiz_mips_count = (hiz_max_dim as f32).log2().floor() as u32 + 1;
@@ -1263,4 +1268,3 @@ impl State {
         msaa_texture.create_view(&wgpu::TextureViewDescriptor::default())
     }
 }
-

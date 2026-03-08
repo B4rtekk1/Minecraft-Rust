@@ -81,7 +81,7 @@ pub fn extract_frustum_planes(view_proj: &Matrix4<f32>) -> [Vector4<f32>; 6] {
             m[2][3] - m[2][1],
             m[3][3] - m[3][1],
         ),
-        // Near (WGPU depth is [0, 1])
+        // Near
         Vector4::new(m[0][2], m[1][2], m[2][2], m[3][2]),
         // Far
         Vector4::new(
@@ -92,7 +92,6 @@ pub fn extract_frustum_planes(view_proj: &Matrix4<f32>) -> [Vector4<f32>; 6] {
         ),
     ];
 
-    // Normalize planes so that distances are in world units
     for plane in &mut planes {
         let length = (plane.x * plane.x + plane.y * plane.y + plane.z * plane.z).sqrt();
         plane.x /= length;

@@ -80,7 +80,6 @@ pub fn update_network(
     mouse_captured: &mut bool,
     window: &Window,
 ) {
-    // Send position every 50ms
     if last_position_send.elapsed().as_millis() > 50 {
         *last_position_send = Instant::now();
 
@@ -103,7 +102,6 @@ pub fn update_network(
         }
     }
 
-    // Receive packets from channel (non-blocking)
     if let Some(rx) = network_rx.as_mut() {
         while let Ok(packet) = rx.try_recv() {
             match packet {

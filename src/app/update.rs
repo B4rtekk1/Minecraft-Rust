@@ -2,11 +2,11 @@ use std::time::Instant;
 
 use render3d::{
     BlockType, CHUNK_SIZE, GENERATION_DISTANCE, MAX_CHUNKS_PER_FRAME, MAX_MESH_BUILDS_PER_FRAME,
-    SUBCHUNK_HEIGHT, NUM_SUBCHUNKS,
+    NUM_SUBCHUNKS, SUBCHUNK_HEIGHT,
 };
 
-use crate::ui;
 use crate::multiplayer::network::update_network;
+use crate::ui;
 
 use super::state::{State, WorldSnapshot, WorldWriteOps};
 
@@ -93,8 +93,7 @@ impl State {
             let mut missing_chunks = Vec::new();
             if player_chunk_moved || self.chunk_loader.pending_count() < 32 {
                 for cx in (player_cx - GENERATION_DISTANCE)..=(player_cx + GENERATION_DISTANCE) {
-                    for cz in
-                        (player_cz - GENERATION_DISTANCE)..=(player_cz + GENERATION_DISTANCE)
+                    for cz in (player_cz - GENERATION_DISTANCE)..=(player_cz + GENERATION_DISTANCE)
                     {
                         if !world.chunks.contains_key(&(cx, cz))
                             && !self.chunk_loader.is_pending(cx, cz)
@@ -108,18 +107,18 @@ impl State {
                 }
             }
 
-            let (raycast_result, target_block) = if self.mouse_captured
-                && (self.input.left_mouse || self.input.right_mouse) {
-                let raycast = self.camera.raycast(&*world, 5.0);
-                if let Some((bx, by, bz, _, _, _)) = raycast {
-                    let block = world.get_block(bx, by, bz);
-                    (Some((bx, by, bz, 0, 0, 0)), Some(block))
+            let (raycast_result, target_block) =
+                if self.mouse_captured && (self.input.left_mouse || self.input.right_mouse) {
+                    let raycast = self.camera.raycast(&*world, 5.0);
+                    if let Some((bx, by, bz, _, _, _)) = raycast {
+                        let block = world.get_block(bx, by, bz);
+                        (Some((bx, by, bz, 0, 0, 0)), Some(block))
+                    } else {
+                        (None, None)
+                    }
                 } else {
                     (None, None)
-                }
-            } else {
-                (None, None)
-            };
+                };
 
             let eye_pos = self.camera.eye_position();
             let eye_block = world.get_block(
@@ -215,7 +214,6 @@ impl State {
 
         self.update_coords_ui();
 
-        // Limit mesh updates per frame to prevent FPS spikes
         let max_mesh_updates = MAX_MESH_BUILDS_PER_FRAME;
         for _ in 0..max_mesh_updates {
             if let Some(result) = self.mesh_loader.poll_result() {
@@ -235,7 +233,8 @@ impl State {
                     subchunk_y: sy,
                 };
                 self.indirect_manager.remove_subchunk(&self.queue, key);
-                self.water_indirect_manager.remove_subchunk(&self.queue, key);
+                self.water_indirect_manager
+                    .remove_subchunk(&self.queue, key);
             }
         }
     }
@@ -297,7 +296,6 @@ impl State {
         }
     }
 
-    /// Internal wrapper for update_network to avoid name collision
     fn update_network_state(&mut self) {
         update_network(
             &mut self.my_player_id,
@@ -314,4 +312,3 @@ impl State {
         );
     }
 }
-

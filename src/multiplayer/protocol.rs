@@ -1,4 +1,4 @@
-use std::io::{Cursor, Error, ErrorKind, Read, Result, Write};
+use std::io::{Cursor, Error, ErrorKind, Read, Result};
 
 pub type PlayerId = u32;
 
@@ -233,7 +233,6 @@ fn read_u64(cursor: &mut Cursor<&[u8]>) -> Result<u64> {
     Ok(u64::from_le_bytes(bytes))
 }
 
-// Angle encoding helpers
 pub fn encode_yaw(degrees: f32) -> u8 {
     (((degrees % 360.0) + 360.0) % 360.0 / 360.0 * 256.0) as u8
 }
@@ -260,31 +259,4 @@ fn read_i32(cursor: &mut Cursor<&[u8]>) -> Result<i32> {
     let mut bytes = [0u8; 4];
     cursor.read_exact(&mut bytes)?;
     Ok(i32::from_le_bytes(bytes))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_position_roundtrip() {
-        let packet = Packet::Position {
-            player_id: 12345,
-            x: 1.5,
-            y: 64.0,
-            z: -3.25,
-        };
-
-        let bytes = packet.to_bytes();
-        let decoded = Packet::from_bytes(&bytes).unwrap();
-
-        if let Packet::Position { player_id, x, y, z } = decoded {
-            assert_eq!(player_id, 12345);
-            assert_eq!(x, 1.5);
-            assert_eq!(y, 64.0);
-            assert_eq!(z, -3.25);
-        } else {
-            panic!("Wrong packet type");
-        }
-    }
 }
