@@ -67,12 +67,16 @@ impl State {
                 }
 
                 self.queue.write_buffer(
-                    self.player_model_vertex_buffer.as_ref().unwrap(),
+                    self.player_model_vertex_buffer
+                        .as_ref()
+                        .expect("Player model vertex buffer should be initialized"),
                     0,
                     bytemuck::cast_slice(&all_vertices),
                 );
                 self.queue.write_buffer(
-                    self.player_model_index_buffer.as_ref().unwrap(),
+                    self.player_model_index_buffer
+                        .as_ref()
+                        .expect("Player model index buffer should be initialized"),
                     0,
                     bytemuck::cast_slice(&all_indices),
                 );
@@ -647,14 +651,22 @@ impl State {
                 ));
             } else {
                 self.queue.write_buffer(
-                    self.progress_bar_vertex_buffer.as_ref().unwrap(),
+                    self.progress_bar_vertex_buffer
+                        .as_ref()
+                        .expect("Progress bar vertex buffer should be initialized"),
                     0,
                     bytemuck::cast_slice(&vertices),
                 );
             }
 
-            let progress_vb = self.progress_bar_vertex_buffer.as_ref().unwrap();
-            let progress_ib = self.progress_bar_index_buffer.as_ref().unwrap();
+            let progress_vb = self
+                .progress_bar_vertex_buffer
+                .as_ref()
+                .expect("Progress bar vertex buffer should be initialized");
+            let progress_ib = self
+                .progress_bar_index_buffer
+                .as_ref()
+                .expect("Progress bar index buffer should be initialized");
 
             let mut progress_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Progress Bar Pass"),
@@ -805,7 +817,10 @@ impl State {
                     text_areas,
                     &mut self.swash_cache,
                 )
-                .unwrap();
+                .map_err(|e| {
+                    tracing::error!("Failed to prepare text: {:?}", e);
+                    wgpu::SurfaceError::Lost
+                })?;
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Text Render Pass"),
@@ -822,7 +837,10 @@ impl State {
             });
             self.text_renderer
                 .render(&self.text_atlas, &self.viewport, &mut pass)
-                .unwrap();
+                .map_err(|e| {
+                    tracing::error!("Failed to render text: {:?}", e);
+                    wgpu::SurfaceError::Lost
+                })?;
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

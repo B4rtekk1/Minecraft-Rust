@@ -9,7 +9,7 @@ pub async fn run_dedicated_server(addr: &str) {
             let server = Arc::new(server_inst);
             println!("Server is now listening on {}", addr);
             println!("Waiting for connections...");
-            std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            let _ = std::io::Write::flush(&mut std::io::stdout());
 
             loop {
                 match server.accept().await {

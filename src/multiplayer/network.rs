@@ -12,6 +12,7 @@ pub fn connect_to_server(
     network_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<Packet>>,
     network_tx: &mut Option<tokio::sync::mpsc::UnboundedSender<Packet>>,
 ) {
+    // Clone strings early to avoid borrow conflicts
     let addr = menu_state.server_address.clone();
     let username = menu_state.username.clone();
 

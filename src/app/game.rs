@@ -38,19 +38,19 @@ pub fn run_game() {
         tracing::info!("To play the game, run the application without --server.");
         tracing::info!("Press Ctrl+C to stop the server.");
         use std::io::Write;
-        std::io::stdout().flush().unwrap();
+        let _ = std::io::stdout().flush();
 
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime.");
         rt.block_on(run_dedicated_server(&addr));
         return;
     }
 
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoop::new().expect("Failed to create event loop");
     let window = WindowBuilder::new()
         .with_title("Mini Minecraft 256x256 | Loading...")
         .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
         .build(&event_loop)
-        .unwrap();
+        .expect("Failed to create window");
 
     let mut state = pollster::block_on(State::new(window));
 
@@ -325,5 +325,5 @@ pub fn run_game() {
                 _ => {}
             }
         })
-        .unwrap();
+        .expect("Event loop error");
 }

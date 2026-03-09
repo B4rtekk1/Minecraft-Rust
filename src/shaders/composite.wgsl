@@ -52,3 +52,4 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return textureSample(scene_texture, composite_sampler, in.uv);
 }
+

@@ -669,7 +669,7 @@ impl World {
                             2 => block.bottom_color(),
                             3 => {
                                 if block == BlockType::Grass {
-                                    biome.unwrap().grass_color()
+                                    biome.map(|b| b.grass_color()).unwrap_or([0.4, 0.8, 0.2])
                                 } else {
                                     block.top_color()
                                 }
@@ -678,7 +678,7 @@ impl World {
                                 if block == BlockType::Grass {
                                     block.color()
                                 } else if block == BlockType::Leaves {
-                                    biome.unwrap().leaves_color()
+                                    biome.map(|b| b.leaves_color()).unwrap_or([0.2, 0.6, 0.2])
                                 } else {
                                     block.color()
                                 }

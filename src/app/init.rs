@@ -37,11 +37,15 @@ impl State {
         let window = Arc::new(window);
         let size = window.inner_size();
 
+        let backend = wgpu::Backends::all(); // DX12 is faster on windows than vulkan
+
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends: backend,
             ..Default::default()
         });
-        let surface = instance.create_surface(window.clone()).unwrap();
+        let surface = instance
+            .create_surface(window.clone())
+            .expect("Failed to create surface");
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -50,7 +54,7 @@ impl State {
                 force_fallback_adapter: false,
             })
             .await
-            .unwrap();
+            .expect("Failed to find a suitable GPU adapter");
 
         let info = adapter.get_info();
         tracing::info!(
@@ -78,7 +82,7 @@ impl State {
                 trace: wgpu::Trace::Off,
             })
             .await
-            .unwrap();
+            .expect("Failed to create GPU device");
 
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
@@ -476,7 +480,7 @@ impl State {
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer: &shadow_cascade_buffer,
                     offset: 0,
-                    size: Some(std::num::NonZeroU64::new(80).unwrap()),
+                    size: std::num::NonZeroU64::new(80),
                 }),
             }],
             label: Some("shadow_bind_group"),

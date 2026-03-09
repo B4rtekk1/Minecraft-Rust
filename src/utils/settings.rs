@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{Read, Write};
+use tracing::{error, warn};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GameSettings {
@@ -98,8 +101,8 @@ impl Default for ShadowSettings {
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
 pub enum ShadowQuality {
     Hard,
-    Pcf,  // Percentage Closer Filtering
-    Pcss, // Percentage Closer Soft Shadows
+    Pcf,
+    Pcss,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -262,16 +265,26 @@ impl Default for DebugSettings {
     }
 }
 
-pub fn save_settings(settings: &GameSettings) {
-    let encoded: Vec<u8> = bincode::serialize(settings).unwrap();
-    let mut file = File::create("settings.bin").unwrap();
-    file.write_all(&encoded).unwrap();
+pub fn save_settings(settings: &GameSettings) -> Result<(), Box<dyn std::error::Error>> {
+    let encoded: Vec<u8> = bincode::serialize(settings)?;
+    let mut file = File::create("settings.bin")?;
+    file.write_all(&encoded)?;
     Ok(())
 }
 
 pub fn load_settings() -> GameSettings {
-    let mut file = File::open("settings.bin").unwrap();
+    match try_load_settings() {
+        Ok(settings) => settings,
+        Err(e) => {
+            warn!("Failed to load settings: {}. Using defaults.", e);
+            GameSettings::default()
+        }
+    }
+}
+
+fn try_load_settings() -> Result<GameSettings, Box<dyn std::error::Error>> {
+    let mut file = File::open("settings.bin")?;
     let mut encoded = Vec::new();
-    file.read_to_end(&mut encoded).unwrap();
-    bincode::deserialize(&encoded).unwrap()
+    file.read_to_end(&mut encoded)?;
+    Ok(bincode::deserialize(&encoded)?)
 }
