@@ -95,7 +95,6 @@ impl GpuMemoryInfo{
     }
 
     pub fn calculate_buffer_limits(&self) -> BufferLimits {
-        // Keep headroom for other resources (textures, pipelines, staging, etc.).
         let usable_vram = (self.total_vram_bytes as f64 * 0.4) as u64;
 
         const VERTEX_SIZE: u64 = 56;
@@ -230,8 +229,8 @@ impl Dx12MemoryDetector {
                 Ok(adapter3) => {
                     let mut mem_info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
                     match adapter3.QueryVideoMemoryInfo(
-                        0, // Node index
-                        DXGI_MEMORY_SEGMENT_GROUP_LOCAL, // Local memory (VRAM)
+                        0,
+                        DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
                         &mut mem_info,
                     ) {
                         Ok(_) => {

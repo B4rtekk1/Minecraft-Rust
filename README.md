@@ -328,11 +328,11 @@ Contributions are welcome! Please follow these guidelines:
 
 | Metric | Target |
 |--------|--------|
-| **FPS** | 100+ (RTX 3050 4GB @ 1080p) |
-| **Memory** | < 1GB (with render distance 12) |
+| **FPS** | 200+ (RTX 3050 4GB @ 1080p) |
+| **Memory** | < 0.5GB (with render distance 12) |
 | **GPU Memory** | ~1.5GB |
-| **Chunk Load Time** | < 16ms |
-| **Frame Time** | 9-12ms |
+| **Chunk Load Time** | < 6ms |
+| **Frame Time** | 4-7ms |
 
 *Performance varies by hardware and settings.*
 
@@ -351,14 +351,6 @@ Contributions are welcome! Please follow these guidelines:
 - **Rust community** - For amazing ecosystem
 
 ---
-
-<div align="center">
-
-**Made with ❤️ in Rust**
-
-[⬆ Back to Top](#-render3d---high-performance-voxel-rendering-engine)
-
-</div>
 
 ## Roadmap
 

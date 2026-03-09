@@ -1,6 +1,3 @@
-//! Player-related modules
-//! Contains camera, input handling, and physics.
-
 pub mod camera;
 pub mod input;
 
