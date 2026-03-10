@@ -28,6 +28,9 @@ Built on **wgpu** for cross-platform GPU support (Vulkan, DirectX 12, Metal), Re
 
 ---
 
+### OS
+Tested on windows 11, might not work on windows 10. You can clone repo and try complinig game on linux and/or macOS
+
 ## DEMO
 
 
