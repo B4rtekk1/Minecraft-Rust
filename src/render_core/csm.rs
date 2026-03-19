@@ -66,7 +66,7 @@ impl CsmManager {
                 let dist = ((corner.x - center.x).powi(2)
                     + (corner.y - center.y).powi(2)
                     + (corner.z - center.z).powi(2))
-                .sqrt();
+                    .sqrt();
                 radius = radius.max(dist);
             }
 

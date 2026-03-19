@@ -1,20 +1,43 @@
+/// All biome types used during world generation.
+///
+/// The biome at a given column determines surface block selection, grass and
+/// leaf tint colors, tree density, and other generation parameters. The default
+/// biome is [`Biome::Plains`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Biome {
+    /// Open grassland. Moderate tree density, bright green grass.
     #[default]
     Plains,
+    /// Dense woodland. Dark green foliage, high tree coverage.
     Forest,
+    /// Arid sandy terrain. No trees, sand-colored grass tint.
     Desert,
+    /// Cold, snowy landscape. Muted green tint, sparse trees.
     Tundra,
+    /// High-altitude rocky terrain. Reduced vegetation, grey-green tint.
     Mountains,
+    /// Waterlogged lowland. Dark, murky green tint, moderate trees.
     Swamp,
+    /// Deep water body. No trees or land vegetation.
     Ocean,
+    /// Sandy shoreline transition zone. No trees.
     Beach,
+    /// Narrow flowing water channel. No trees.
     River,
+    /// Enclosed body of water. No trees.
     Lake,
+    /// Small land mass surrounded by water. Light tree coverage.
     Island,
 }
 
 impl Biome {
+    /// Returns the RGB grass tint color for this biome.
+    ///
+    /// Used to tint the top face of [`BlockType::Grass`] blocks during meshing.
+    /// Water biomes (`Ocean`, `River`, `Lake`) return a blue water color as a
+    /// fallback since they have no grass surface.
+    ///
+    /// Components are in linear `[0.0, 1.0]` space.
     pub fn grass_color(&self) -> [f32; 3] {
         match self {
             Biome::Plains => [0.45, 0.75, 0.30],
@@ -31,6 +54,13 @@ impl Biome {
         }
     }
 
+    /// Returns the RGB leaf tint color for [`BlockType::Leaves`] in this biome.
+    ///
+    /// Biomes without trees (`Desert`, `Ocean`, `Beach`, `River`, `Lake`)
+    /// fall through to a neutral green default since leaves will not appear there
+    /// under normal generation.
+    ///
+    /// Components are in linear `[0.0, 1.0]` space.
     pub fn leaves_color(&self) -> [f32; 3] {
         match self {
             Biome::Plains => [0.35, 0.65, 0.25],
@@ -42,6 +72,15 @@ impl Biome {
         }
     }
 
+    /// Returns the minimum noise threshold above which a tree will be placed.
+    ///
+    /// The world generator compares this value against a `[0.0, 1.0]` noise
+    /// sample; a tree is placed when `noise >= tree_density()`. Lower values
+    /// therefore produce denser forests.
+    ///
+    /// Biomes that do not support trees (`Desert`, `Ocean`, `Beach`, `River`,
+    /// `Lake`) return `1.0` so the threshold is never met. Prefer checking
+    /// [`Self::has_trees`] before sampling noise to avoid unnecessary work.
     pub fn tree_density(&self) -> f64 {
         match self {
             Biome::Plains => 0.75,
@@ -58,6 +97,11 @@ impl Biome {
         }
     }
 
+    /// Returns `true` if trees can generate in this biome.
+    ///
+    /// `false` for `Desert`, `Ocean`, `Beach`, `River`, and `Lake`. Use this
+    /// as an early-out before evaluating [`Self::tree_density`] during
+    /// world generation.
     pub fn has_trees(&self) -> bool {
         matches!(
             self,

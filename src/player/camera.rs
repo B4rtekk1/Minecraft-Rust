@@ -5,16 +5,53 @@ use crate::core::block::BlockType;
 use crate::player::input::InputState;
 use crate::world::World;
 
+/// First-person camera that doubles as the player's physical body.
+///
+/// Owns the player's world-space position, look angles, and physics state.
+/// Movement, collision detection, and water interaction are all handled in
+/// [`Camera::update`]. The eye point is offset `+1.8` units above
+/// [`Self::position`] to simulate head height.
 pub struct Camera {
+    /// Foot-level world-space position of the player.
+    ///
+    /// The Y component represents the bottom of the player's AABB. Use
+    /// [`Camera::eye_position`] to get the rendering origin.
     pub position: Point3<f32>,
+
+    /// Horizontal look angle in radians, measured from the positive X axis.
+    ///
+    /// Increases clockwise when viewed from above (right = positive yaw).
     pub yaw: f32,
+
+    /// Vertical look angle in radians.
+    ///
+    /// Clamped to roughly `[-π/2, π/2]`; positive values look upward.
     pub pitch: f32,
+
+    /// Current velocity in world-space units per second `[x, y, z]`.
+    ///
+    /// Modified each frame by [`Camera::update`] based on input, gravity,
+    /// drag, and collision response.
     pub velocity: Vector3<f32>,
+
+    /// `true` when the player is resting on a solid surface.
+    ///
+    /// Jumping is only allowed when this flag is set. Cleared when the player
+    /// moves upward or away from the ground, set when downward collision is detected.
     pub on_ground: bool,
+
+    /// `true` when at least one block overlapping the player's body is [`BlockType::Water`].
+    ///
+    /// Switches the physics constants to underwater values (reduced gravity,
+    /// lower speed, swim controls).
     pub in_water: bool,
 }
 
 impl Camera {
+    /// Creates a new camera at the given world-space spawn position.
+    ///
+    /// Yaw and pitch are initialized to `0.0` (looking toward +X).
+    /// Velocity is zero and both `on_ground` and `in_water` are `false`.
     pub fn new(spawn: (f32, f32, f32)) -> Self {
         Camera {
             position: Point3::new(spawn.0, spawn.1, spawn.2),
@@ -26,49 +63,71 @@ impl Camera {
         }
     }
 
+    /// Returns the horizontal forward unit vector based on the current yaw.
+    ///
+    /// Y is always `0.0`; use [`Camera::look_direction`] for the full 3-D
+    /// gaze vector including pitch.
     pub fn forward(&self) -> Vector3<f32> {
         Vector3::new(self.yaw.cos(), 0.0, self.yaw.sin()).normalize()
     }
 
+    /// Returns the horizontal right unit vector based on the current yaw.
+    ///
+    /// Perpendicular to [`Camera::forward`] on the XZ plane.
     pub fn right(&self) -> Vector3<f32> {
         Vector3::new(-self.yaw.sin(), 0.0, self.yaw.cos()).normalize()
     }
 
+    /// Returns the full 3-D gaze unit vector combining yaw and pitch.
+    ///
+    /// Used for raycasting and computing the view matrix target point.
     pub fn look_direction(&self) -> Vector3<f32> {
         Vector3::new(
             self.yaw.cos() * self.pitch.cos(),
             self.pitch.sin(),
             self.yaw.sin() * self.pitch.cos(),
         )
-        .normalize()
+            .normalize()
     }
 
+    /// Returns the eye (camera) position, offset `+1.8` units above [`Self::position`].
+    ///
+    /// This is the origin used for rendering and raycasting.
     pub fn eye_position(&self) -> Point3<f32> {
         Point3::new(self.position.x, self.position.y + 1.8, self.position.z)
     }
 
+    /// Builds the right-handed view matrix for the current eye position and look direction.
+    ///
+    /// Suitable for passing directly to the GPU as the `view` component of a
+    /// view-projection matrix.
     pub fn view_matrix(&self) -> Matrix4<f32> {
         let eye = self.eye_position();
         let target = eye + self.look_direction();
         Matrix4::look_at_rh(eye, target, Vector3::unit_y())
     }
 
+    /// Returns `true` if the block at the player's feet or mid-body is [`BlockType::Water`].
+    ///
+    /// Checks two sample points: the foot block (`position.y`) and a mid-body
+    /// block (`position.y + 0.9`) to handle partial submersion.
     fn check_in_water(&self, world: &World) -> bool {
         let feet_block = world.get_block(
             self.position.x.floor() as i32,
             self.position.y.floor() as i32,
             self.position.z.floor() as i32,
         );
-
         let body_block = world.get_block(
             self.position.x.floor() as i32,
             (self.position.y + 0.9).floor() as i32,
             self.position.z.floor() as i32,
         );
-
         feet_block == BlockType::Water || body_block == BlockType::Water
     }
 
+    /// Returns `true` if the block at the eye position is [`BlockType::Water`].
+    ///
+    /// Used by the renderer to apply underwater post-processing effects.
     pub fn is_head_underwater(&self, world: &World) -> bool {
         let eye = self.eye_position();
         let block = world.get_block(
@@ -79,6 +138,20 @@ impl Camera {
         block == BlockType::Water
     }
 
+    /// Advances the player simulation by one frame.
+    ///
+    /// Each call performs the following steps in order:
+    /// 1. Detects water submersion via [`Camera::check_in_water`].
+    /// 2. Select physics constants (speed, gravity, drag) based on water state and sprint input.
+    /// 3. Accumulates a movement direction from `input` and scales it to `base_speed`.
+    /// 4. Applies gravity, jump impulse, and drag.
+    /// 5. Resolves collisions on each axis independently using [`Camera::check_collision`].
+    /// 6. Clamps Y to a minimum of `1.0` to prevent falling out of the world.
+    ///
+    /// # Parameters
+    /// - `world` — used for block queries during collision and water detection.
+    /// - `dt` — delta time in seconds since the last frame.
+    /// - `input` — current frame's digital input state.
     pub fn update(&mut self, world: &World, dt: f32, input: &InputState) {
         self.in_water = self.check_in_water(world);
 
@@ -130,14 +203,12 @@ impl Camera {
                 self.velocity.y -= gravity * dt;
                 self.velocity.y *= vertical_drag;
             }
-
             self.velocity.y = self.velocity.y.clamp(-max_fall_speed * 2.0, jump_velocity);
         } else {
             if input.jump && self.on_ground {
                 self.velocity.y = jump_velocity;
                 self.on_ground = false;
             }
-
             self.velocity.y -= gravity * dt;
             self.velocity.y = self.velocity.y.max(-max_fall_speed);
         }
@@ -171,6 +242,13 @@ impl Camera {
         self.position.y = self.position.y.max(1.0);
     }
 
+    /// Returns `true` if the player AABB centered at `(x, y, z)` overlaps any solid block.
+    ///
+    /// Iterates over all blocks within the bounding box defined by
+    /// [`PLAYER_WIDTH`] and [`PLAYER_HEIGHT`] and delegates intersection
+    /// testing to [`check_intersection`].
+    ///
+    /// Used by [`Camera::update`] for per-axis collision resolution.
     pub fn check_collision(&self, world: &World, x: f32, y: f32, z: f32) -> bool {
         let player_width = PLAYER_WIDTH;
         let player_height = PLAYER_HEIGHT;
@@ -196,10 +274,22 @@ impl Camera {
         false
     }
 
+    /// Returns `true` if the player's current AABB intersects the block at `(bx, by, bz)`.
+    ///
+    /// Convenience wrapper around [`check_intersection`] using [`Self::position`].
     pub fn intersects_block(&self, bx: i32, by: i32, bz: i32) -> bool {
         check_intersection(self.position, bx, by, bz)
     }
 
+    /// Casts a ray from the eye position along the look direction and returns
+    /// the first solid block hit within `max_dist` world units.
+    ///
+    /// Steps along the ray in increments of `0.1` units. Returns
+    /// `Some((hit_x, hit_y, hit_z, prev_x, prev_y, prev_z))` where the first
+    /// three components are the coordinates of the block that was hit and the
+    /// last three are the coordinates of the last empty block before the hit
+    /// (used for block placement). Returns `None` if no solid block is found
+    /// within `max_dist`.
     pub fn raycast(&self, world: &World, max_dist: f32) -> Option<(i32, i32, i32, i32, i32, i32)> {
         let dir = self.look_direction();
         let eye = self.eye_position();
@@ -229,6 +319,11 @@ impl Camera {
     }
 }
 
+/// Returns `true` if the player AABB rooted at `pos` overlaps the unit block at `(bx, by, bz)`.
+///
+/// The player AABB extends [`PLAYER_WIDTH`] units in ±X and ±Z from `pos`,
+/// and [`PLAYER_HEIGHT`] units upward from `pos.y`. Uses a standard
+/// axis-aligned box vs. box intersection test.
 pub fn check_intersection(pos: Point3<f32>, bx: i32, by: i32, bz: i32) -> bool {
     let player_width = PLAYER_WIDTH;
     let player_height = PLAYER_HEIGHT;

@@ -1,5 +1,19 @@
 use crate::core::vertex::Vertex;
 
+/// Adds a single quad (two triangles) to the vertex and index buffers.
+///
+/// The quad is defined by four corner positions in counter-clockwise order.
+/// UV coordinates are assigned as unit square (0.0–1.0 on both axes).
+///
+/// # Arguments
+/// * `vertices` - Mutable reference to the vertex buffer to append to.
+/// * `indices` - Mutable reference to the index buffer to append to.
+/// * `v0..v3` - World-space positions of the four corners.
+/// * `normal` - Surface normal vector for all four vertices.
+/// * `color` - RGB color applied to all four vertices.
+/// * `tex_index` - Index into the texture array sampler.
+/// * `_roughness` - Reserved for PBR roughness (currently unused).
+/// * `_metallic` - Reserved for PBR metallic factor (currently unused).
 pub fn add_quad(
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
@@ -54,6 +68,22 @@ pub fn add_quad(
     ]);
 }
 
+/// Adds a greedy-meshed quad to the vertex and index buffers.
+///
+/// Similar to [`add_quad`], but UV coordinates are scaled by `width` and `height`
+/// to support texture tiling across merged voxel faces produced by greedy meshing.
+///
+/// # Arguments
+/// * `vertices` - Mutable reference to the vertex buffer to append to.
+/// * `indices` - Mutable reference to the index buffer to append to.
+/// * `v0..v3` - World-space positions of the four corners.
+/// * `normal` - Surface normal vector for all four vertices.
+/// * `color` - RGB color applied to all four vertices.
+/// * `tex_index` - Index into the texture array sampler.
+/// * `_roughness` - Reserved for PBR roughness (currently unused).
+/// * `_metallic` - Reserved for PBR metallic factor (currently unused).
+/// * `width` - Number of voxels this quad spans along the horizontal axis (U scale).
+/// * `height` - Number of voxels this quad spans along the vertical axis (V scale).
 pub fn add_greedy_quad(
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
@@ -110,12 +140,21 @@ pub fn add_greedy_quad(
     ]);
 }
 
+/// Builds the geometry for a screen-space crosshair overlay.
+///
+/// Produces two orthogonal rectangles (a horizontal bar and a vertical bar)
+/// centered at the origin in normalized device coordinates. The aspect ratio
+/// correction uses a hardcoded 16:9 ratio so the crosshair appears square
+/// on widescreen displays.
+///
+/// Returns a tuple of `(vertices, indices)` ready to be uploaded to the GPU.
 pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
     let size = 0.02;
     let thickness = 0.001;
     let packed_color = Vertex::pack_color([1.0, 1.0, 1.0]);
     let packed_normal = Vertex::pack_normal([0.0, 0.0, 1.0]);
 
+    // Compensate for widescreen aspect ratio so the crosshair isn't stretched.
     let aspect = 16.0 / 9.0;
     let size_x = size / aspect;
     let thickness_x = thickness / aspect;
@@ -123,6 +162,7 @@ pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
     let mut vertices = Vec::with_capacity(24);
     let mut indices = Vec::with_capacity(36);
 
+    // Horizontal bar.
     vertices.push(Vertex {
         position: [-size_x, -thickness, 0.0],
         normal: packed_normal,
@@ -152,6 +192,8 @@ pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
         tex_index: 0.0,
     });
     indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+
+    // Vertical bar.
     vertices.push(Vertex {
         position: [-thickness_x, -size, 0.0],
         normal: packed_normal,
@@ -185,6 +227,21 @@ pub fn build_crosshair() -> (Vec<Vertex>, Vec<u32>) {
     (vertices, indices)
 }
 
+/// Builds a simple block-based player model at the given world position and yaw.
+///
+/// The model consists of eight axis-aligned boxes (head, torso, two arms, two
+/// upper legs, and two lower legs/shoes) that are rotated around the Y-axis by
+/// `yaw` before being placed in world space.
+///
+/// All geometry uses `tex_index = -1.0` to signal that no texture should be
+/// sampled; shading relies purely on vertex colors.
+///
+/// # Arguments
+/// * `x`, `y`, `z` - World-space origin at the player's feet.
+/// * `yaw` - Rotation around the Y-axis in radians (0 = facing +Z).
+///
+/// # Returns
+/// A tuple of `(vertices, indices)` ready to be uploaded to the GPU.
 pub fn build_player_model(x: f32, y: f32, z: f32, yaw: f32) -> (Vec<Vertex>, Vec<u32>) {
     let mut vertices = Vec::with_capacity(2000);
     let mut indices = Vec::with_capacity(1000);
@@ -192,19 +249,26 @@ pub fn build_player_model(x: f32, y: f32, z: f32, yaw: f32) -> (Vec<Vertex>, Vec
     let cos_yaw = yaw.cos();
     let sin_yaw = yaw.sin();
 
+    /// Rotates a 2-D offset `(dx, dz)` around the Y-axis by the outer `yaw`.
     let rotate = |dx: f32, dz: f32| -> (f32, f32) {
         (dx * cos_yaw - dz * sin_yaw, dx * sin_yaw + dz * cos_yaw)
     };
 
+    /// Appends a yaw-rotated, axis-aligned box to `vertices` and `indices`.
+    ///
+    /// The box is defined by its center offset from the player origin
+    /// `(cx, cy, cz)` and half-extents `(hw, hh, hd)`. All six faces are
+    /// emitted with correct outward normals and a flat `color`.
     let add_box = |vertices: &mut Vec<Vertex>,
                    indices: &mut Vec<u32>,
-                   cx: f32, // center x offset
-                   cy: f32, // center y offset (from feet)
-                   cz: f32, // center z offset
-                   hw: f32, // half width (x)
-                   hh: f32, // half height (y)
-                   hd: f32, // half depth (z)
+                   cx: f32,
+                   cy: f32,
+                   cz: f32,
+                   hw: f32,
+                   hh: f32,
+                   hd: f32,
                    color: [f32; 3]| {
+        // Eight corners of the un-rotated box.
         let corners = [
             (-hw, -hh, -hd),
             (hw, -hh, -hd),
@@ -216,6 +280,7 @@ pub fn build_player_model(x: f32, y: f32, z: f32, yaw: f32) -> (Vec<Vertex>, Vec
             (-hw, hh, hd),
         ];
 
+        // Apply yaw rotation and translate to world space.
         let transformed: Vec<[f32; 3]> = corners
             .iter()
             .map(|&(dx, dy, dz)| {
@@ -224,19 +289,14 @@ pub fn build_player_model(x: f32, y: f32, z: f32, yaw: f32) -> (Vec<Vertex>, Vec
             })
             .collect();
 
+        // Each face is a list of corner indices and its outward normal.
         let faces = [
-            // Front (+Z)
-            ([4, 5, 6, 7], [0.0, 0.0, 1.0]),
-            // Back (-Z)
-            ([1, 0, 3, 2], [0.0, 0.0, -1.0]),
-            // Right (+X)
-            ([5, 1, 2, 6], [1.0, 0.0, 0.0]),
-            // Left (-X)
-            ([0, 4, 7, 3], [-1.0, 0.0, 0.0]),
-            // Top (+Y)
-            ([7, 6, 2, 3], [0.0, 1.0, 0.0]),
-            // Bottom (-Y)
-            ([0, 1, 5, 4], [0.0, -1.0, 0.0]),
+            ([4, 5, 6, 7], [0.0_f32, 0.0, 1.0]),  // Front  (+Z)
+            ([1, 0, 3, 2], [0.0, 0.0, -1.0]),       // Back   (-Z)
+            ([5, 1, 2, 6], [1.0, 0.0, 0.0]),        // Right  (+X)
+            ([0, 4, 7, 3], [-1.0, 0.0, 0.0]),       // Left   (-X)
+            ([7, 6, 2, 3], [0.0, 1.0, 0.0]),        // Top    (+Y)
+            ([0, 1, 5, 4], [0.0, -1.0, 0.0]),       // Bottom (-Y)
         ];
 
         for (face_indices, normal) in faces {
@@ -263,114 +323,34 @@ pub fn build_player_model(x: f32, y: f32, z: f32, yaw: f32) -> (Vec<Vertex>, Vec
         }
     };
 
-    let skin_color = [0.9, 0.75, 0.6]; // Light skin
-    let shirt_color = [0.2, 0.5, 0.9]; // Blue shirt
-    let pants_color = [0.3, 0.25, 0.2]; // Brown pants
-    let shoes_color = [0.15, 0.15, 0.15]; // Dark shoes
+    let skin_color  = [0.9, 0.75, 0.6];  // Light skin tone.
+    let shirt_color = [0.2, 0.5,  0.9];  // Blue shirt / sleeves.
+    let pants_color = [0.3, 0.25, 0.2];  // Brown trousers.
+    let shoes_color = [0.15, 0.15, 0.15]; // Dark shoes.
 
-    // Head
-    add_box(
-        &mut vertices,
-        &mut indices,
-        0.0,
-        1.75,
-        0.0, // center position
-        0.25,
-        0.25,
-        0.25, // half dimensions
-        skin_color,
-    );
+    // Head – centered 1.75 units above the feet.
+    add_box(&mut vertices, &mut indices, 0.0, 1.75, 0.0, 0.25, 0.25, 0.25, skin_color);
 
-    // Body
-    add_box(
-        &mut vertices,
-        &mut indices,
-        0.0,
-        1.125,
-        0.0,
-        0.25,
-        0.375,
-        0.125,
-        shirt_color,
-    );
+    // Torso.
+    add_box(&mut vertices, &mut indices, 0.0, 1.125, 0.0, 0.25, 0.375, 0.125, shirt_color);
 
-    // Right arm
-    add_box(
-        &mut vertices,
-        &mut indices,
-        -0.375,
-        1.125,
-        0.0,
-        0.125,
-        0.375,
-        0.125,
-        shirt_color,
-    );
+    // Right arm.
+    add_box(&mut vertices, &mut indices, -0.375, 1.125, 0.0, 0.125, 0.375, 0.125, shirt_color);
 
-    // Left arm
-    add_box(
-        &mut vertices,
-        &mut indices,
-        0.375,
-        1.125,
-        0.0,
-        0.125,
-        0.375,
-        0.125,
-        shirt_color,
-    );
+    // Left arm.
+    add_box(&mut vertices, &mut indices, 0.375, 1.125, 0.0, 0.125, 0.375, 0.125, shirt_color);
 
-    // Right leg (upper part - pants)
-    add_box(
-        &mut vertices,
-        &mut indices,
-        -0.125,
-        0.5,
-        0.0,
-        0.125,
-        0.25,
-        0.125,
-        pants_color,
-    );
+    // Right upper leg (trousers).
+    add_box(&mut vertices, &mut indices, -0.125, 0.5, 0.0, 0.125, 0.25, 0.125, pants_color);
 
-    // Left leg (upper part - pants)
-    add_box(
-        &mut vertices,
-        &mut indices,
-        0.125,
-        0.5,
-        0.0,
-        0.125,
-        0.25,
-        0.125,
-        pants_color,
-    );
+    // Left upper leg (trousers).
+    add_box(&mut vertices, &mut indices, 0.125, 0.5, 0.0, 0.125, 0.25, 0.125, pants_color);
 
-    // Right leg (lower part - shoes)
-    add_box(
-        &mut vertices,
-        &mut indices,
-        -0.125,
-        0.125,
-        0.0,
-        0.125,
-        0.125,
-        0.125,
-        shoes_color,
-    );
+    // Right lower leg (shoe).
+    add_box(&mut vertices, &mut indices, -0.125, 0.125, 0.0, 0.125, 0.125, 0.125, shoes_color);
 
-    // Left leg (lower part - shoes)
-    add_box(
-        &mut vertices,
-        &mut indices,
-        0.125,
-        0.125,
-        0.0,
-        0.125,
-        0.125,
-        0.125,
-        shoes_color,
-    );
+    // Left lower leg (shoe).
+    add_box(&mut vertices, &mut indices, 0.125, 0.125, 0.0, 0.125, 0.125, 0.125, shoes_color);
 
     (vertices, indices)
 }
