@@ -2,6 +2,8 @@
 
   on:
     push:
+      tags:
+        - 'v*'
 
   permissions:
     contents: write
@@ -30,22 +32,22 @@
         - name: Package ZIP
           shell: pwsh
           run: |
-            $out = "render3d-windows"
+            $out = "Minerust-windows"
             New-Item -ItemType Directory -Force -Path $out
   
             # Copy exe
-            Copy-Item "target\x86_64-pc-windows-msvc\release\render3d.exe" "$out\"
+            Copy-Item "target\x86_64-pc-windows-msvc\release\Minerust.exe" "$out\"
   
             # Copy assets
             Copy-Item -Recurse "assets" "$out\"
   
             # Create ZIP archive
-            Compress-Archive -Path "$out\*" -DestinationPath "render3d-windows.zip" -Force
+            Compress-Archive -Path "$out\*" -DestinationPath "Minerust-windows.zip" -Force
 
         - name: Create GitHub Release and upload files
           if: startsWith(github.ref, 'refs/tags/')
           uses: softprops/action-gh-release@v2
           with:
-            files: render3d-windows.zip
-            generate_release_notes: true
+            files: Minerust-windows.zip
+            generate_release_notes: false
 
