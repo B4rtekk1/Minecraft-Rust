@@ -137,20 +137,6 @@ graphics:
 gameplay:
   difficulty: normal
   
-audio:
-  master_volume: 1.0
-```
-
-**Settings File Locations:**
-```
-Windows: %APPDATA%/Render3D/settings.yaml
-Linux:   ~/.config/render3d/settings.yaml
-macOS:   ~/Library/Application Support/Render3D/settings.yaml
-```
-
-**Key Functions:**
-- `load() → Result<Settings>` - Load from file or use defaults
-- `save(&self) → Result<()>` - Persist to file
 - `validate(&self) → Result<()>` - Validate all settings
 - `reset_to_defaults() → Settings` - Get default settings
 - `merge(defaults, user_config) → Settings` - Merge configs
@@ -315,7 +301,7 @@ world-seed=12345
 view-distance=10
 simulation-distance=5
 whitelist-enabled=false
-motd=Welcome to Render3D!
+motd=Welcome to Minerust!
 ```
 
 **Whitelist System:**
@@ -370,7 +356,7 @@ When multiple configs exist, priority is:
    cargo run -- --render-distance 20
 
 2. User settings file
-   ~/.config/render3d/settings.yaml
+   ~/.config/minerust/settings.yaml
 
 3. Game defaults
    settings_deafult.yaml (lowest priority)
@@ -403,5 +389,5 @@ Real-time preview as settings change
 
 ---
 
-**Key Takeaway:** The `utils/` module provides essential infrastructure for configuration management, GPU memory diagnostics, and server administration, enabling robust customization and optimization of the Render3D engine.
+**Key Takeaway:** The `utils/` module provides essential infrastructure for configuration management, GPU memory diagnostics, and server administration, enabling robust customization and optimization of the Minerust engine.
 

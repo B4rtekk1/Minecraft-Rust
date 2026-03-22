@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `core/` module defines the fundamental data structures that represent the Render3D world. It includes block types, chunk storage, biome definitions, and GPU data structures (vertices, uniforms). This is the low-level foundation upon which all world simulation and rendering is built.
+The `core/` module defines the fundamental data structures that represent the Minerust world. It includes block types, chunk storage, biome definitions, and GPU data structures (vertices, uniforms). This is the low-level foundation upon which all world simulation and rendering is built.
 
 ## Module Structure
 

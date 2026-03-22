@@ -13,7 +13,7 @@ Only the latest release is actively maintained and receives security updates.
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in Render3D, **please do not open a public GitHub issue**. Public disclosure before a fix is available can put users at risk.
+If you discover a security vulnerability in Minerust, **please do not open a public GitHub issue**. Public disclosure before a fix is available can put users at risk.
 
 Instead, report it privately via email:
 
@@ -55,4 +55,4 @@ Once a fix is released, we will publish a summary of the vulnerability and the f
 
 ---
 
-Thank you for helping keep Render3D and its users safe.
+Thank you for helping keep Minerust and its users safe.

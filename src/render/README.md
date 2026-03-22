@@ -61,7 +61,7 @@ pub struct MeshPool {
 
 **Buffer Architecture:**
 
-Instead of allocating separate buffers per chunk, Render3D uses **large pre-allocated buffers**:
+Instead of allocating separate buffers per chunk, Minerust uses **large pre-allocated buffers**:
 
 ```
 Unified Vertex Buffer (560MB)

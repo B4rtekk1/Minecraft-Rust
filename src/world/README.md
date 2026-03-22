@@ -276,7 +276,7 @@ Main Thread                 Worker Thread
 **Memory Management:**
 - Chunks are lazily loaded
 - Distant chunks are unloaded automatically
-- Save format (world.r3d) stores modified chunks
+- Save format (world.minerust) stores modified chunks
 - Unmodified generated chunks can be regenerated
 
 ### `spline.rs` - Interpolation Utilities
@@ -461,9 +461,9 @@ world/ ←→ multiplayer/(Sync chunks with clients)
 
 ## World Saving
 
-Modified chunks are saved to `world.r3d`:
+Modified chunks are saved to `world.minerust`:
 ```
-world.r3d (Binary format)
+world.minerust (Binary format)
 ├── Header (version, world properties)
 ├── Modified chunk 0: x=10, z=5
 ├── Modified chunk 1: x=10, z=6
@@ -495,5 +495,5 @@ world:
 
 ---
 
-**Key Takeaway:** The `world/` module creates infinite, beautiful, deterministic worlds using noise-based procedural generation combined with targeted feature placement. It's designed for both visual variety and computational efficiency through async streaming and multithreaded generation.
+**Key Takeaway:** The `world/` module creates infinite, beautiful, deterministic worlds using noise-based procedural generation combined with targeted feature placement. It's designed for both visual variety and computational efficiency through async streaming and multithreaded generation. This is the foundation of the Minerust experience.
 

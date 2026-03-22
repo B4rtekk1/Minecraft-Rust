@@ -61,7 +61,7 @@ Screen Output
 **HUD Elements:**
 ```
 ┌────────────────────────────────────┐
-│ Render3D v0.1.0        FPS: 120    │  Top-left/right
+│ Minerust v0.1.0        FPS: 120    │  Top-left/right
 ├────────────────────────────────────┤
 │                                    │
 │  O───────┤                         │  Crosshair (center)
@@ -155,7 +155,7 @@ pub struct Panel {
 #### **Main Menu**
 ```
 ╔══════════════════════════════════╗
-║        RENDER3D                  ║
+║        MINERUST                  ║
 ║      Voxel Engine               ║
 ╠══════════════════════════════════╣
 ║                                  ║

@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Render3D](https://img.shields.io/badge/Rust-CE422B?style=for-the-badge&logo=rust&logoColor=white)
+![Minerust](https://img.shields.io/badge/Rust-CE422B?style=for-the-badge&logo=rust&logoColor=white)
 ![WGPU](https://img.shields.io/badge/WGPU-0.28-blue?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 
@@ -16,9 +16,9 @@
 
 ## 📋 Overview
 
-**Render3D** is a cutting-edge voxel rendering engine written in Rust, designed for high-performance, scalable game development. It combines modern GPU rendering techniques with sophisticated procedural generation to deliver an infinite, dynamically generated world reminiscent of sandbox games like Minecraft.
+**Minerust** is a cutting-edge voxel rendering engine written in Rust, designed for high-performance, scalable game development. It combines modern GPU rendering techniques with sophisticated procedural generation to deliver an infinite, dynamically generated world reminiscent of sandbox games like Minecraft.
 
-Built on **wgpu** for cross-platform GPU support (Vulkan, DirectX 12, Metal), Render3D pushes the boundaries of what's possible with voxel rendering through:
+Built on **wgpu** for cross-platform GPU support (Vulkan, DirectX 12, Metal), Minerust pushes the boundaries of what's possible with voxel rendering through:
 
 - 🚀 **GPU-Driven Rendering Pipeline** - Indirect drawing with compute shader culling
 - 🌍 **Infinite Procedural Worlds** - 11 biomes with caves, ore, and structures
@@ -97,8 +97,8 @@ https://github.com/user-attachments/assets/306f1229-8aa5-43d7-90c9-7e312252fc4a
 
 ```bash
 # Clone repository
-git clone https://github.com/B4rtekk1/Render3D.git
-cd render3d
+git clone https://github.com/B4rtekk1/Minerust.git
+cd minerust
 
 # Build (release mode recommended for performance)
 cargo build --release
@@ -349,8 +349,8 @@ Contributions are welcome! Please follow these guidelines:
 
 ## 💬 Support & Community
 
-- **Issues**: Report bugs on [GitHub Issues](https://github.com/B4rtekk1/Render3D/issues)
-- **Discussions**: Join [GitHub Discussions](https://github.com/B4rtekk1/Render3D/discussions)
+- **Issues**: Report bugs on [GitHub Issues](https://github.com/B4rtekk1/Minerust/issues)
+- **Discussions**: Join [GitHub Discussions](https://github.com/B4rtekk1/Minerust/discussions)
 - **Email**: Contact via project repository
 
 ---

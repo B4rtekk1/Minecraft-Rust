@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `src/` directory contains all Rust source code for the Render3D project, organized into logical modules by functionality.
+The `src/` directory contains all Rust source code for the Minerust project, organized into logical modules by functionality.
 
 ## Root Files
 

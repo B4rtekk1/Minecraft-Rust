@@ -1,15 +1,15 @@
-# Render3D Project - Folder Structure Documentation
+# Minerust Project - Folder Structure Documentation
 
 ## Overview
 
-This document provides a comprehensive guide to the folder structure and organization of the **Render3D** project. Render3D is a high-performance voxel rendering engine written in Rust, featuring GPU-driven rendering, procedurally generated worlds, and multiplayer support.
+This document provides a comprehensive guide to the folder structure and organization of the **Minerust** project. Minerust is a high-performance voxel rendering engine written in Rust, featuring GPU-driven rendering, procedurally generated worlds, and multiplayer support.
 
 ---
 
 ## Project Root Directory
 
 ```
-render3d/
+minerust/
 ├── src/                          # Source code (Rust modules)
 ├── assets/                       # Game assets (textures, fonts, config)
 ├── shaders/                      # WGSL shader files (currently empty)
@@ -18,7 +18,7 @@ render3d/
 ├── Cargo.lock                    # Dependency lock file
 ├── README.md                     # Main project documentation
 ├── FOLDER_STRUCTURE.md           # This file
-└── world.r3d                     # World save file
+└── world.minerust                # World save file
 ```
 
 ---
@@ -337,14 +337,14 @@ assets/
 ```
 target/
 ├── debug/                        # Debug build
-│   ├── render3d.exe             # Debug executable
-│   ├── render3d.pdb             # Debug symbols
-│   ├── librender3d.rlib         # Debug library
+│   ├── minerust.exe             # Debug executable
+│   ├── minerust.pdb             # Debug symbols
+│   ├── libminerust.rlib         # Debug library
 │   └── deps/                    # Dependencies
 ├── release/                      # Release build
-│   ├── render3d.exe             # Optimized executable
-│   ├── render3d.pdb
-│   ├── librender3d.rlib
+│   ├── minerust.exe             # Optimized executable
+│   ├── minerust.pdb
+│   ├── libminerust.rlib
 │   └── deps/
 └── flycheck0/                    # IDE temporary files
 ```
@@ -425,7 +425,7 @@ fastnoise-lite = "1.1"       # Procedural noise
 - **`Cargo.toml`** - Project manifest with dependencies and build profile
 - **`Cargo.lock`** - Dependency lock file (ensures reproducible builds)
 - **`README.md`** - Main project documentation
-- **`world.r3d`** - Saved world file (binary format)
+- **`world.minerust`** - Saved world file (binary format)
 - **`FOLDER_STRUCTURE.md`** - This documentation file
 
 ---
@@ -471,7 +471,7 @@ Each module should follow these patterns:
 ---
 
 **Last Updated:** 2026-03-05
-**Project:** Render3D - Voxel Rendering Engine
+**Project:** Minerust - Voxel Rendering Engine
 **Language:** Rust
 **License:** See LICENSE file
 

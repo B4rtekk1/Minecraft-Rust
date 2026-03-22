@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `app/` module is the heart of the Render3D application. It manages the main game loop, window initialization, GPU device management, input handling, and overall application state. This module orchestrates all other systems (rendering, world generation, networking, UI).
+The `app/` module is the heart of the Minerust application. It manages the main game loop, window initialization, GPU device management, input handling, and overall application state. This module orchestrates all other systems (rendering, world generation, networking, UI).
 
 ## Module Structure
 

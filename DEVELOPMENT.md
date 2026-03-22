@@ -1,8 +1,8 @@
-# Render3D Project - Additional Documentation
+# Minerust Project - Additional Documentation
 
 ## Project-Level Documentation
 
-This document provides supplementary information about key systems and patterns used throughout the Render3D project.
+This document provides supplementary information about key systems and patterns used throughout the Minerust project.
 
 ---
 
@@ -79,7 +79,7 @@ cargo build
 RUST_LOG=debug cargo run
 
 # Specific module logging
-RUST_LOG=render3d::render=debug cargo run
+RUST_LOG=minerust::render=debug cargo run
 
 # Verbose output
 RUST_LOG=trace cargo run
@@ -111,7 +111,7 @@ nvidia-smi  # NVIDIA GPUs
 ### Module Hierarchy
 
 ```
-render3d (binary root)
+minerust (binary root)
 ├── app/          ← Entry point for game loop
 ├── core/         ← Fundamental data structures
 ├── render/       ← GPU rendering pipeline
@@ -439,7 +439,7 @@ let objects: Vec<Box<dyn Renderable>> = vec![
 
 **Debugging:**
 ```bash
-valgrind --leak-check=full ./render3d
+valgrind --leak-check=full ./minerust
 ```
 
 **Common Causes:**
@@ -473,7 +473,7 @@ valgrind --leak-check=full ./render3d
 
 ---
 
-## Extending Render3D
+## Extending Minerust
 
 ### Adding a New Block Type
 
@@ -528,7 +528,7 @@ Before publishing a release:
 
 ## License & Attribution
 
-**Render3D License:**
+**Minerust License:**
 [See LICENSE file in project root]
 
 **Third-Party Libraries:**
@@ -567,6 +567,6 @@ Check individual LICENSE files in:
 ---
 
 **Last Updated:** 2026-03-05
-**Project:** Render3D - Voxel Rendering Engine  
+**Project:** Minerust - Voxel Rendering Engine  
 **Status:** Active Development
 

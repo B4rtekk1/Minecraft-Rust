@@ -1,4 +1,4 @@
-# Contributing to Render3D
+# Contributing to Minerust
 
 Thank you for your interest in contributing! This document will help you get started.
 
@@ -19,7 +19,7 @@ Thank you for your interest in contributing! This document will help you get sta
 
 ## Reporting Bugs
 
-- Check if the issue has already been reported in [GitHub Issues](https://github.com/B4rtekk1/Minecraft-Rust/issues).
+- Check if the issue has already been reported in [GitHub Issues](https://github.com/B4rtekk1/Minerust/issues).
 - If not, open a new issue with:
   - A clear title and description
   - Steps to reproduce

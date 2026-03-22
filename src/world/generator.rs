@@ -107,8 +107,8 @@ impl ChunkGenerator {
             noise_detail:           Self::create_fbm_noise(seed.wrapping_add(2),  0.018),
             noise_temperature:      Self::create_noise(seed.wrapping_add(3),      0.006),
             noise_moisture:         Self::create_noise(seed.wrapping_add(4),      0.008),
-            noise_river:            Self::create_noise(seed.wrapping_add(5),      0.055),
-            noise_lake:             Self::create_noise(seed.wrapping_add(6),      0.022),
+            noise_river:            Self::create_noise(seed.wrapping_add(5),      0.012),
+            noise_lake:             Self::create_noise(seed.wrapping_add(6),      0.042),
             noise_trees:            Self::create_noise(seed.wrapping_add(7),      0.12),
             noise_island:           Self::create_noise(seed.wrapping_add(8),      0.045),
             noise_cave1:            Self::create_3d_noise(seed.wrapping_add(9),   0.045),
@@ -755,7 +755,25 @@ impl ChunkGenerator {
                 let depth = 20.0 + (continental + 1.0) * 0.5 * 18.0;
                 depth + detail * 2.5
             }
-            Biome::River => (SEA_LEVEL - 2) as f64 + detail * 1.5,
+            Biome::River => {
+                // Uśrednienie wysokości z sąsiadami dla łagodniejszych brzegów
+                let mut sum = 0.0;
+                let mut count = 0.0;
+                for dx in -1..=1 {
+                    for dz in -1..=1 {
+                        let nx = x + dx;
+                        let nz = z + dz;
+                        // Pomijamy środek, by nie podwajać
+                        if dx != 0 || dz != 0 {
+                            sum += self.calculate_base_height_with_biome(nx, nz, Biome::Plains);
+                            count += 1.0;
+                        }
+                    }
+                }
+                let avg = sum / count;
+                // Dno rzeki to średnia z sąsiadów (plains) - 2, plus drobny detal
+                (avg - 2.0).min((SEA_LEVEL - 2) as f64) + detail * 1.5
+            },
             Biome::Lake  => (SEA_LEVEL - 5) as f64 + detail * 2.0,
             Biome::Beach => SEA_LEVEL as f64 + terrain * 3.5 * erosion_mult + detail * 1.5,
             Biome::Island => {
@@ -1638,3 +1656,4 @@ impl Clone for ChunkGenerator {
         ChunkGenerator::new(self.seed)
     }
 }
+

@@ -133,7 +133,7 @@ pub fn run_game() {
 
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     let window = WindowBuilder::new()
-        .with_title("Mini Minecraft 256x256 | Loading...")
+        .with_title("Minerust 256x256 | Loading...")
         .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
         .build(&event_loop)
         .expect("Failed to create window");

@@ -90,5 +90,5 @@ pub fn load_world<P: AsRef<Path>>(path: P) -> Result<SavedWorld, String> {
     bincode::deserialize_from(reader).map_err(|e| format!("Deserialization error: {}", e))
 }
 
-pub const WORLD_FILE_EXTENSION: &str = "r3d";
-pub const DEFAULT_WORLD_FILE: &str = "world.r3d";
+pub const WORLD_FILE_EXTENSION: &str = "minerust";
+pub const DEFAULT_WORLD_FILE: &str = "world.minerust";

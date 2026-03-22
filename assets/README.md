@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `assets/` directory contains all non-code resources for the Render3D engine: textures, fonts, and configuration files. These resources are loaded at runtime to customize the visual appearance of the game.
+The `assets/` directory contains all non-code resources for the Minerust engine: textures, fonts, and configuration files. These resources are loaded at runtime to customize the visual appearance of the game.
 
 ## Directory Structure
 
@@ -186,7 +186,7 @@ Features:
 - Supports Latin character set
 - Hinting for screen rendering
 
-Usage in Render3D:
+Usage in Minerust:
 - Main UI text
 - Chat messages
 - Labels and buttons
@@ -226,7 +226,7 @@ textures/
 {
   "pack": {
     "pack_format": 13,
-    "description": "Render3D Default Textures",
+    "description": "Minerust Default Textures",
     "pack_format_version": [
       13,
       13

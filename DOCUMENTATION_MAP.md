@@ -1,4 +1,4 @@
-# Render3D Documentation - Quick Navigation
+# Minerust Documentation - Quick Navigation
 
 ## 📚 Documentation Structure
 
@@ -47,7 +47,7 @@ Each major module has its own detailed README:
 ## 🗂️ Documentation Map
 
 ```
-render3d/
+minerust/
 ├── README.md                          ← Project overview
 ├── FOLDER_STRUCTURE.md                ← Complete folder guide
 ├── DEVELOPMENT.md                     ← Development reference
@@ -107,7 +107,7 @@ render3d/
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│              Render3D Game Engine                   │
+│              Minerust Game Engine                   │
 ├─────────────────────────────────────────────────────┤
 │                                                     │
 │  ┌─────────────────────────────────────────┐       │
