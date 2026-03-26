@@ -155,7 +155,7 @@ fn calculate_shadow(
 
 // ====================== COMPUTE SHADER ======================
 
-@compute @workgroup_size(8, 8, 1)
+@compute @workgroup_size(16, 16, 1)
 fn compute_shadow(@builtin(global_invocation_id) gid: vec3<u32>) {
     let tex_size = textureDimensions(gbuffer_world_pos);
     if (gid.x >= tex_size.x || gid.y >= tex_size.y) {
