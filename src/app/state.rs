@@ -80,6 +80,11 @@ pub struct State {
     /// Compute pipeline that resolves the MSAA depth buffer into Hi-Z seed
     /// level 0 and the single-sampled SSR depth texture.
     pub depth_resolve_pipeline: wgpu::ComputePipeline,
+    /// Depth-only prepass pipeline for terrain. Fills the depth buffer before
+    /// shadow-mask and Hi-Z compute passes.
+    pub terrain_depth_pipeline: wgpu::RenderPipeline,
+    /// Compute pipeline that writes the screen-space shadow mask (R32Float).
+    pub shadow_mask_pipeline: wgpu::ComputePipeline,
 
     // -------------------------------------------------------------------------
     // Static geometry buffers
@@ -120,6 +125,10 @@ pub struct State {
     pub composite_bind_group: wgpu::BindGroup,
     /// Bind group for the depth-resolve compute pass.
     pub depth_resolve_bind_group: wgpu::BindGroup,
+    /// Bind group exposing the resolved depth texture to the shadow-mask compute.
+    pub shadow_mask_input_bind_group: wgpu::BindGroup,
+    /// Bind group exposing the shadow-mask storage texture for compute writes.
+    pub shadow_mask_output_bind_group: wgpu::BindGroup,
 
     // -------------------------------------------------------------------------
     // Render targets and textures

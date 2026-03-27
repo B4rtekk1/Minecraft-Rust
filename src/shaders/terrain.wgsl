@@ -21,9 +21,8 @@ struct ShadowConfig {
 @group(0) @binding(4) var shadow_sampler:          sampler_comparison;
 @group(0) @binding(5) var<uniform> shadow_config: ShadowConfig;
 
-@group(1) @binding(0) var gbuffer_world_pos:  texture_2d<f32>;
-@group(1) @binding(1) var gbuffer_normal:     texture_2d<f32>;
-@group(1) @binding(2) var gbuffer_view_depth: texture_2d<f32>;
+// Shadow-mask compute inputs (resolved depth buffer).
+@group(1) @binding(0) var ssr_depth: texture_2d<f32>;
 
 @group(2) @binding(0) var output_shadow: texture_storage_2d<r32float, write>;
 
@@ -144,26 +143,38 @@ fn calculate_shadow(
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_shadow(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let tex_size = textureDimensions(gbuffer_world_pos);
+    let tex_size = textureDimensions(ssr_depth);
     if (gid.x >= tex_size.x || gid.y >= tex_size.y) {
         return;
     }
 
-    let gbuffer_sample = textureLoad(gbuffer_world_pos, gid.xy, 0);
-    if gbuffer_sample.a < 0.5 {
+    let depth = textureLoad(ssr_depth, gid.xy, 0).r;
+    // Depth of 1.0 is the far plane / background: fully lit.
+    if depth >= 0.999999 {
         textureStore(output_shadow, gid.xy, vec4<f32>(1.0, 0.0, 0.0, 0.0));
         return;
     }
 
-    let world_pos  = gbuffer_sample.xyz;
-    let normal     = normalize(textureLoad(gbuffer_normal,     gid.xy, 0).xyz);
-    let view_depth = textureLoad(gbuffer_view_depth, gid.xy, 0).r;
+    // Reconstruct world position from screen-space depth.
+    let uv = (vec2<f32>(gid.xy) + vec2<f32>(0.5)) / vec2<f32>(tex_size);
+    let ndc = vec4<f32>(
+        uv.x * 2.0 - 1.0,
+        (1.0 - uv.y) * 2.0 - 1.0,
+        depth,
+        1.0,
+    );
+    let wp4 = uniforms.inv_view_proj * ndc;
+    let world_pos = wp4.xyz / max(wp4.w, 1e-6);
+
+    // Approximate view-depth for cascade selection using radial distance.
+    let view_depth = length(world_pos - uniforms.camera_pos);
 
     let sun_dir = normalize(uniforms.sun_position);
 
     var shadow_factor = 1.0;
     if (sun_dir.y > 0.0) {
-        shadow_factor = calculate_shadow(world_pos, normal, sun_dir, view_depth);
+        // No normal buffer in this path; use an "up" normal for bias shaping.
+        shadow_factor = calculate_shadow(world_pos, vec3<f32>(0.0, 1.0, 0.0), sun_dir, view_depth);
     }
 
     textureStore(output_shadow, gid.xy, vec4<f32>(shadow_factor, 0.0, 0.0, 0.0));

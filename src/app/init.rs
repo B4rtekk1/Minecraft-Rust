@@ -107,10 +107,10 @@ impl State {
 
         // Use all available backends; on Windows, wgpu will prefer DX12 over
         // Vulkan because DX12 typically yields better frame times there.
-        let backend = wgpu::Backends::DX12;
+        let backend = wgpu::Backends::all();
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: backend,
+            backends: backend,          
             ..Default::default()
         });
 
@@ -441,9 +441,8 @@ impl State {
             ..Default::default()
         });
 
-        // Screen-space shadow mask sampled by `terrain.wgsl`.
-        // It starts fully lit so the terrain path works even before a compute
-        // pass is wired up to write real shadow coverage into it.
+        // Screen-space shadow mask sampled by `terrain.wgsl` (R32Float).
+        // Written each frame by the shadow-mask compute pass.
         let shadow_mask_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Shadow Mask Texture"),
             size: wgpu::Extent3d {
@@ -454,8 +453,10 @@ impl State {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let shadow_mask_view =
@@ -466,22 +467,33 @@ impl State {
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Shadow Mask Clear Encoder"),
                 });
-            clear_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Shadow Mask Clear Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &shadow_mask_view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
-                        store: wgpu::StoreOp::Store,
+            // Initialise to "fully lit" (1.0) so sampling is valid before
+            // the first compute dispatch.
+            clear_encoder.copy_buffer_to_texture(
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Shadow Mask Init Buffer"),
+                        contents: bytemuck::cast_slice(&vec![1.0f32; (config.width * config.height) as usize]),
+                        usage: wgpu::BufferUsages::COPY_SRC,
+                    }),
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * config.width),
+                        rows_per_image: Some(config.height),
                     },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &shadow_mask_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: config.width,
+                    height: config.height,
+                    depth_or_array_layers: 1,
+                },
+            );
             queue.submit(Some(clear_encoder.finish()));
         }
 
@@ -513,7 +525,9 @@ impl State {
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::VERTEX
+                            | wgpu::ShaderStages::FRAGMENT
+                            | wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
@@ -539,7 +553,7 @@ impl State {
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Depth,
                             view_dimension: wgpu::TextureViewDimension::D2Array,
@@ -555,7 +569,7 @@ impl State {
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 5,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
@@ -592,7 +606,7 @@ impl State {
                         binding: 0,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
@@ -607,30 +621,50 @@ impl State {
                 ],
             });
 
-        // These placeholder layouts keep the terrain shader's binding group
-        // indices aligned with `terrain.wgsl`.
+        // These layouts keep the terrain shader's binding group indices aligned
+        // with `terrain.wgsl`. They are used by the shadow-mask compute pass.
         let terrain_gbuffer_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("terrain_gbuffer_bind_group_layout"),
-                entries: &[],
+                entries: &[
+                    // group(1) binding(0): ssr_depth texture (R32Float, non-filterable)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                ],
             });
         let terrain_shadow_output_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("terrain_shadow_output_bind_group_layout"),
                 entries: &[],
             });
-
-        let terrain_gbuffer_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("terrain_gbuffer_bind_group"),
-            layout: &terrain_gbuffer_bind_group_layout,
-            entries: &[],
-        });
-        let terrain_shadow_output_bind_group =
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("terrain_shadow_output_bind_group"),
-                layout: &terrain_shadow_output_bind_group_layout,
-                entries: &[],
+        let shadow_mask_output_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("shadow_mask_output_bind_group_layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::R32Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                }],
             });
+
+        // Bind groups that depend on `ssr_depth_view` are created later, after
+        // the SSR textures are allocated.
+        let terrain_gbuffer_bind_group: wgpu::BindGroup;
+        let terrain_shadow_output_bind_group: wgpu::BindGroup;
+        let shadow_mask_output_bind_group: wgpu::BindGroup;
 
         // ------------------------------------------------------------------ //
         // SSR (Screen-Space Reflections) targets
@@ -670,6 +704,29 @@ impl State {
             view_formats: &[],
         });
         let ssr_depth_view = ssr_depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Bind groups for the shadow-mask compute now that resolved depth exists.
+        terrain_gbuffer_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("terrain_gbuffer_bind_group"),
+            layout: &terrain_gbuffer_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&ssr_depth_view),
+            }],
+        });
+        terrain_shadow_output_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("terrain_shadow_output_bind_group"),
+            layout: &terrain_shadow_output_bind_group_layout,
+            entries: &[],
+        });
+        shadow_mask_output_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("shadow_mask_output_bind_group"),
+            layout: &shadow_mask_output_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&shadow_mask_view),
+            }],
+        });
 
         // Nearest-neighbor sampler for SSR lookups; bilinear filtering would
         // blur the reflected image and cause incorrect depth comparisons.
@@ -968,6 +1025,17 @@ impl State {
                 immediate_size: 0,
             });
 
+        let shadow_mask_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Shadow Mask Pipeline Layout"),
+                bind_group_layouts: &[
+                    &uniform_bind_group_layout,              // group: 0
+                    &terrain_gbuffer_bind_group_layout,      // group: 1 (ssr_depth)
+                    &shadow_mask_output_bind_group_layout,   // group: 2 (shadow mask output)
+                ],
+                immediate_size: 0,
+            });
+
         let water_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Water Pipeline Layout"),
@@ -1021,6 +1089,42 @@ impl State {
             },
             multiview_mask: None,
         });
+
+        // --- Terrain depth prepass (depth-only) ---
+        // Fills the MSAA depth buffer so we can resolve depth and compute a
+        // screen-space shadow mask before the main color pass.
+        let terrain_depth_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Terrain Depth Pipeline"),
+                layout: Some(&pipeline_layout),
+                cache: None,
+                vertex: wgpu::VertexState {
+                    module: &terrain_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Vertex::desc()],
+                },
+                fragment: None,
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: msaa_sample_count,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+            });
 
         // --- Water (translucent, alpha-blended) ---
         // No back-face culling so water surfaces are visible from below.
@@ -1192,6 +1296,18 @@ impl State {
             },
             multiview_mask: None,
         });
+
+        // --- Shadow mask compute pipeline ---
+        // Writes `shadow_mask_texture` (R32Float) using resolved depth and CSM.
+        let shadow_mask_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Shadow Mask Pipeline"),
+                layout: Some(&shadow_mask_pipeline_layout),
+                cache: None,
+                module: &terrain_shader,
+                entry_point: Some("compute_shadow"),
+                compilation_options: Default::default(),
+            });
 
         // --- Sun / Moon billboard ---
         // Rendered as a quad in world space; alpha-blended and depth-tested
@@ -1808,9 +1924,11 @@ impl State {
             uniform_buffer,
             shadow_config_buffer,
             uniform_bind_group,
-            terrain_gbuffer_bind_group,
-            terrain_shadow_output_bind_group,
+            terrain_gbuffer_bind_group: terrain_gbuffer_bind_group.clone(),
+            terrain_shadow_output_bind_group: terrain_shadow_output_bind_group.clone(),
             shadow_bind_group,
+            terrain_depth_pipeline,
+            shadow_mask_pipeline,
             depth_texture,
             msaa_texture_view,
             shadow_texture_view,
@@ -1820,6 +1938,8 @@ impl State {
             shadow_cascade_buffer,
             shadow_sampler,
             shadow_mask_bind_group,
+            shadow_mask_input_bind_group: terrain_gbuffer_bind_group,
+            shadow_mask_output_bind_group,
             world,
             mesh_loader,
             camera,

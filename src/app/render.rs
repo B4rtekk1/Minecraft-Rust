@@ -530,6 +530,99 @@ impl State {
             [self.config.width as f32, self.config.height as f32],
         );
 
+        // ── Terrain depth prepass ─────────────────────────────────────────── //
+        // Fill the MSAA depth buffer first so we can resolve it and compute a
+        // screen-space shadow mask before shading the terrain.
+        if self.game_state != GameState::Menu {
+            let mut depth_prepass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Terrain Depth Prepass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            depth_prepass.set_pipeline(&self.terrain_depth_pipeline);
+            depth_prepass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            depth_prepass.set_bind_group(1, &self.terrain_gbuffer_bind_group, &[]);
+            depth_prepass.set_bind_group(2, &self.terrain_shadow_output_bind_group, &[]);
+            depth_prepass.set_bind_group(3, &self.shadow_mask_bind_group, &[]);
+            depth_prepass.set_vertex_buffer(0, self.indirect_manager.vertex_buffer().slice(..));
+            depth_prepass.set_index_buffer(
+                self.indirect_manager.index_buffer().slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            if self.supports_indirect_count {
+                depth_prepass.multi_draw_indexed_indirect_count(
+                    self.indirect_manager.draw_commands(),
+                    0,
+                    self.indirect_manager.visible_count_buffer(),
+                    0,
+                    self.indirect_manager.active_count(),
+                );
+            } else {
+                depth_prepass.multi_draw_indexed_indirect(
+                    self.indirect_manager.draw_commands(),
+                    0,
+                    self.indirect_manager.active_count(),
+                );
+            }
+        }
+
+        // ── Depth resolve compute pass ───────────────────────────────────── //
+        // Resolve MSAA depth early (from the prepass) so the shadow-mask compute
+        // can reconstruct world positions.
+        if self.game_state != GameState::Menu {
+            let mut depth_resolve_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Depth Resolve Compute Pass (Prepass)"),
+                timestamp_writes: None,
+            });
+            depth_resolve_pass.set_pipeline(&self.depth_resolve_pipeline);
+            depth_resolve_pass.set_bind_group(0, &self.depth_resolve_bind_group, &[]);
+            depth_resolve_pass.dispatch_workgroups(
+                (self.config.width + 15) / 16,
+                (self.config.height + 15) / 16,
+                1,
+            );
+        }
+
+        // ── Shadow mask compute ──────────────────────────────────────────── //
+        if self.game_state != GameState::Menu {
+            let mut shadow_mask_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Shadow Mask Compute Pass"),
+                timestamp_writes: None,
+            });
+            shadow_mask_pass.set_pipeline(&self.shadow_mask_pipeline);
+            shadow_mask_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            shadow_mask_pass.set_bind_group(1, &self.shadow_mask_input_bind_group, &[]);
+            shadow_mask_pass.set_bind_group(2, &self.shadow_mask_output_bind_group, &[]);
+            shadow_mask_pass.dispatch_workgroups(
+                (self.config.width + 7) / 8,
+                (self.config.height + 7) / 8,
+                1,
+            );
+        }
+
+        // ── Hi-Z mip chain generation (compute) ───────────────────────────── //
+        // Downsample the resolved depth (seeded above) into the Hi-Z pyramid.
+        for i in 0..self.hiz_bind_groups.len() {
+            let mut hiz_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Hi-Z Generation Pass Level"),
+                timestamp_writes: None,
+            });
+            hiz_pass.set_pipeline(&self.hiz_pipeline);
+            hiz_pass.set_bind_group(0, &self.hiz_bind_groups[i], &[]);
+            let div = 1 << (i + 1);
+            let mip_width = (self.hiz_size[0] / div).max(1);
+            let mip_height = (self.hiz_size[1] / div).max(1);
+            hiz_pass.dispatch_workgroups((mip_width + 15) / 16, (mip_height + 15) / 16, 1);
+        }
+
         // ── Opaque pass ───────────────────────────────────────────────────── //
         // Renders: sky dome → terrain chunks → remote player models → sun/moon.
         // Writes to the 4× MSAA color target which is resolved simultaneously
@@ -563,7 +656,9 @@ impl State {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_texture,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0), // 1.0 = max depth
+                        // Re-clear for the color pass; prepass depth is only
+                        // used earlier for shadow-mask and Hi-Z compute.
+                        load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -644,46 +739,6 @@ impl State {
             opaque_pass
                 .set_index_buffer(self.sun_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             opaque_pass.draw_indexed(0..6, 0, 0..1);
-        }
-
-        // ── Depth resolve compute pass ───────────────────────────────────── //
-        // Resolve the MSAA depth buffer into two single-sampled outputs:
-        //   • `hiz_mips[0]`    – conservative max-depth seed for Hi-Z
-        //   • `ssr_depth_view` – closest-depth copy for water refraction
-        {
-            let mut depth_resolve_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Depth Resolve Compute Pass"),
-                timestamp_writes: None,
-            });
-            depth_resolve_pass.set_pipeline(&self.depth_resolve_pipeline);
-            depth_resolve_pass.set_bind_group(0, &self.depth_resolve_bind_group, &[]);
-            depth_resolve_pass.dispatch_workgroups(
-                (self.config.width + 15) / 16,
-                (self.config.height + 15) / 16,
-                1,
-            );
-        }
-
-        // ── Hi-Z mip chain generation (compute) ───────────────────────────── //
-        // Downsample the depth texture from mip 0 down to 1×1 using the
-        // conservative max-depth rule: each output texel stores the maximum
-        // depth of the 2×2 source block, ensuring that a chunk whose AABB
-        // projects entirely within one mip texel is only passed if there is
-        // guaranteed to be no closer geometry in that region.
-        for i in 0..self.hiz_bind_groups.len() {
-            let mut hiz_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Hi-Z Generation Pass Level"),
-                timestamp_writes: None,
-            });
-            hiz_pass.set_pipeline(&self.hiz_pipeline);
-            hiz_pass.set_bind_group(0, &self.hiz_bind_groups[i], &[]);
-            // Each workgroup covers a 16×16 tile; dispatch enough groups to
-            // cover the entire mip level even if its dimensions are not
-            // multiples of 16.
-            let div = 1 << (i + 1);
-            let mip_width = (self.hiz_size[0] / div).max(1);
-            let mip_height = (self.hiz_size[1] / div).max(1);
-            hiz_pass.dispatch_workgroups((mip_width + 15) / 16, (mip_height + 15) / 16, 1);
         }
 
         // ── Transparent (water) pass ──────────────────────────────────────── //
