@@ -2,7 +2,7 @@ use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 use std::thread;
-
+use rand::random;
 use crate::constants::*;
 use crate::core::biome::Biome;
 use crate::core::block::BlockType;
@@ -67,7 +67,8 @@ pub struct World {
 impl World {
     /// Creates a new world with the default seed (`2137`) and no loaded chunks.
     pub fn new() -> Self {
-        Self::new_empty_with_seed(42)
+        let seed = random();
+        Self::new_empty_with_seed(seed) //42
     }
 
     /// Creates a new empty world with the given `seed`.

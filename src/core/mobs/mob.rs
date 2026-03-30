@@ -1,6 +1,18 @@
 use std::collections::HashMap;
 use once_cell::sync::Lazy;
 
+pub enum MobType {
+    Neutral,
+    Hostile,
+    Passive,
+}
+
+pub enum MobVariant {
+    Normal,
+    Baby,
+    Elder,
+}
+
 pub struct Mob {
     pub id: &'static str,
     pub name: &'static str,
@@ -9,6 +21,8 @@ pub struct Mob {
     pub run_speed: f32,
     pub jump_height: f32,
     pub damage: f32,
+    pub mob_type: MobType,
+    pub variant: MobVariant,
 }
 
 pub static MOBS: Lazy<HashMap<&'static str, &'static Mob>> = Lazy::new(|| {

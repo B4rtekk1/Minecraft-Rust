@@ -21,7 +21,6 @@ struct ShadowConfig {
 @group(0) @binding(4) var shadow_sampler:          sampler_comparison;
 @group(0) @binding(5) var<uniform> shadow_config: ShadowConfig;
 
-// Shadow-mask compute inputs (resolved depth buffer).
 @group(1) @binding(0) var ssr_depth: texture_2d<f32>;
 
 @group(2) @binding(0) var output_shadow: texture_storage_2d<r32float, write>;
@@ -33,7 +32,10 @@ const PI:               f32 = 3.14159265359;
 const MAX_PCF_SAMPLES:  i32 = 16;
 
 fn world_space_noise(world_pos: vec3<f32>) -> f32 {
-    return fract(sin(dot(world_pos.xz, vec2<f32>(127.1, 311.7))) * 43758.5453);
+    let p = vec2<u32>(bitcast<u32>(world_pos.x) ^ 0x9e3779b9u,
+                      bitcast<u32>(world_pos.z) ^ 0x517cc1b7u);
+    let h = p.x * 0x27d4eb2du ^ p.y * 0x85ebca6bu;
+    return f32(h & 0xFFFFu) / 65535.0;
 }
 
 fn get_poisson_sample(idx: i32, rotation: f32) -> vec2<f32> {
@@ -149,13 +151,11 @@ fn compute_shadow(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let depth = textureLoad(ssr_depth, gid.xy, 0).r;
-    // Depth of 1.0 is the far plane / background: fully lit.
     if depth >= 0.999999 {
         textureStore(output_shadow, gid.xy, vec4<f32>(1.0, 0.0, 0.0, 0.0));
         return;
     }
 
-    // Reconstruct world position from screen-space depth.
     let uv = (vec2<f32>(gid.xy) + vec2<f32>(0.5)) / vec2<f32>(tex_size);
     let ndc = vec4<f32>(
         uv.x * 2.0 - 1.0,
@@ -166,14 +166,12 @@ fn compute_shadow(@builtin(global_invocation_id) gid: vec3<u32>) {
     let wp4 = uniforms.inv_view_proj * ndc;
     let world_pos = wp4.xyz / max(wp4.w, 1e-6);
 
-    // Approximate view-depth for cascade selection using radial distance.
     let view_depth = length(world_pos - uniforms.camera_pos);
 
     let sun_dir = normalize(uniforms.sun_position);
 
     var shadow_factor = 1.0;
     if (sun_dir.y > 0.0) {
-        // No normal buffer in this path; use an "up" normal for bias shaping.
         shadow_factor = calculate_shadow(world_pos, vec3<f32>(0.0, 1.0, 0.0), sun_dir, view_depth);
     }
 

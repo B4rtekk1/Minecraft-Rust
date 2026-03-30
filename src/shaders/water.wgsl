@@ -239,10 +239,12 @@ fn ggx_spec_simple(normal: vec3<f32>, view: vec3<f32>, light: vec3<f32>, roughne
 }
 
 fn fbm_normal_perturb(p: vec2<f32>, t: f32) -> vec2<f32> {
-    let s1 = 0.28 * sin(vec2(p.x * 3.1 + t * 0.9, p.y * 2.7 - t * 1.1));
-    let s2 = 0.14 * sin(vec2(p.x * 6.3 - t * 1.7 + 1.3, p.y * 5.9 + t * 1.4 + 0.7));
-    let s3 = 0.06 * sin(vec2(p.x * 13.1 + t * 2.6 + 2.7, p.y * 11.7 - t * 2.2 + 1.4));
-    return s1 + s2 + s3;
+    let a = sin(vec4(
+        p.x * 3.1  + t * 0.9,   p.y * 2.7  - t * 1.1,
+        p.x * 6.3  - t * 1.7 + 1.3, p.y * 5.9 + t * 1.4 + 0.7
+    ));
+    let b = sin(vec2(p.x * 13.1 + t * 2.6 + 2.7, p.y * 11.7 - t * 2.2 + 1.4));
+    return a.xz * 0.28 + a.yw * 0.14 + b * 0.06;
 }
 
 fn sky_reflection_color(view_dir: vec3<f32>, sun_dir: vec3<f32>, moon_intensity: f32) -> vec3<f32> {
