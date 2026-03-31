@@ -17,7 +17,6 @@ fn main() {
 
     if let Err(e) = app::run_game() {
         log(LogLevel::Error, &format!("Error occurred while starting game: {}", e));
-        eprintln!("Critical error: {}", e);
         std::process::exit(1);
     }
 }

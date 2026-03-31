@@ -6,7 +6,7 @@ use winit::{
     event::{DeviceEvent, ElementState, Event, KeyEvent, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{CursorGrabMode, WindowBuilder},
+    window::{CursorGrabMode, WindowBuilder, Fullscreen},
 };
 
 use minerust::{
@@ -132,13 +132,35 @@ pub fn run_game() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Windowed game mode ────────────────────────────────────────────────── //
 
-    let event_loop = EventLoop::new().expect("Failed to create event loop");
-    let window = WindowBuilder::new()
-        .with_title("Minerust 256x256 | Loading...")
+    // Create the event loop. If creation can fail in this winit version,
+    // log the error and return it; otherwise this simply constructs the
+    // event loop value.
+    let event_loop = match EventLoop::new() {
+        // If EventLoop::new returns a Result in this winit version
+        // handle Ok/Err.
+        Ok(ev) => ev,
+        Err(e) => {
+            log(LogLevel::Error, &format!("Failed to create event loop: {}", e));
+            return Err(Box::new(e) as Box<dyn std::error::Error>);
+        }
+    };
+
+    // Build the window. On failure, log the error and return it instead
+    // of panicking so the caller can handle it gracefully.
+    let window = match WindowBuilder::new()
+        .with_title("Minerust")
         .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
         .with_transparent(true)
+        // Start the window in borderless fullscreen on the current monitor.
+        .with_fullscreen(Some(Fullscreen::Borderless(None)))
         .build(&event_loop)
-        .expect("Failed to create window");
+    {
+        Ok(w) => w,
+        Err(e) => {
+            log(LogLevel::Error, &format!("Failed to create window: {}", e));
+            return Err(Box::new(e) as Box<dyn std::error::Error>);
+        }
+    };
 
     // `State::new` is async (wgpu adapter/device requests are futures), but
     // the rest of the game is synchronous; `pollster::block_on` bridges them
@@ -197,7 +219,7 @@ pub fn run_game() -> Result<(), Box<dyn std::error::Error>> {
                         // GPU out of memory: nothing reasonable to do here,
                         // so exit cleanly rather than panic.
                         Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
-                        Err(e) => eprintln!("Render error: {:?}", e),
+                        Err(e) => log(LogLevel::Error, &format!("Render error: {:?}", e)),
                     }
 
                     // Request the next frame immediately (uncapped frame rate).
@@ -319,7 +341,7 @@ pub fn run_game() -> Result<(), Box<dyn std::error::Error>> {
                                     1 => "SSR",
                                     _ => "Unknown",
                                 };
-                                println!("Reflection mode: {}", mode_name);
+                                log(LogLevel::Info, &format!("Reflection mode: {}", mode_name));
                             }
 
                             // ---- F5: Save world to disk ---------------------
@@ -340,16 +362,16 @@ pub fn run_game() -> Result<(), Box<dyn std::error::Error>> {
                                     (state.camera.yaw, state.camera.pitch),
                                 );
                                 if let Err(e) = save_world(DEFAULT_WORLD_FILE, &saved) {
-                                    eprintln!("Failed to save world: {}", e);
+                                    log(LogLevel::Error, &format!("Failed to save world: {}", e));
                                 } else {
-                                    println!("World saved to {}", DEFAULT_WORLD_FILE);
+                                    log(LogLevel::Info, &format!("World saved to {}", DEFAULT_WORLD_FILE));
                                 }
                             }
 
                             // ---- F9: Load world from disk -------------------
                             KeyCode::F9 if pressed => match load_world(DEFAULT_WORLD_FILE) {
                                 Ok(saved) => {
-                                    println!("Regenerating world with seed {}...", saved.seed);
+                                    log(LogLevel::Info, &format!("Regenerating world with seed {}...", saved.seed));
 
                                     // Reinitialize the world from the saved seed
                                     // so procedurally-generated terrain is
@@ -423,12 +445,12 @@ pub fn run_game() -> Result<(), Box<dyn std::error::Error>> {
                                             }
                                         }
                                     }
-                                    println!(
+                                    log(LogLevel::Info, &format!(
                                         "World loaded from {} (seed: {})",
                                         DEFAULT_WORLD_FILE, saved.seed
-                                    );
+                                    ));
                                 }
-                                Err(e) => println!("Error loading: {}", e),
+                                Err(e) => log(LogLevel::Error, &format!("Error loading: {}", e)),
                             },
 
                             // ---- Hotbar slot selection (1–9) ----------------

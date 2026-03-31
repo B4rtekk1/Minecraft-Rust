@@ -320,8 +320,6 @@ impl State {
                 inv_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
                 // `csm_view_proj` holds four 4×4 matrices – one per cascade.
                 csm_view_proj: [Mat4::IDENTITY.to_cols_array_2d(); 4],
-                // Split distances (world-space) for the four CSM cascades.
-                // Tune these to balance shadow resolution vs. coverage range.
                 csm_split_distances: [16.0, 48.0, 128.0, 300.0],
                 camera_pos: [0.0, 0.0, 0.0],
                 time: 0.0,

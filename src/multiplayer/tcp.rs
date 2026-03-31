@@ -339,7 +339,7 @@ impl TcpClient {
     ///
     /// Returns an I/O error if the connection attempt or `set_nodelay` call fails.
     pub async fn connect(&mut self, addr: &str) -> Result<()> {
-        println!("[TCP Client] Connecting to {}...", addr);
+        log(LogLevel::Info, &format!("[TCP Client] Attempting to connect to {}...", addr));
         let stream = TcpStream::connect(addr).await?;
         // Disable Nagle's algorithm so small game packets are sent immediately.
         stream.set_nodelay(true)?;
@@ -347,7 +347,7 @@ impl TcpClient {
         let socket_addr = stream.peer_addr()?;
         self.connection = Some(Arc::new(TcpConnection::new(stream, socket_addr)));
 
-        println!("[TCP Client] Connected to {}", addr);
+        log(LogLevel::Info, &format!("[TCP Client] Successfully connected to {}", addr));
         Ok(())
     }
 
@@ -401,7 +401,7 @@ impl TcpClient {
         if let Some(conn) = self.connection.take() {
             conn.close().await?;
         }
-        println!("[TCP Client] Disconnected");
+        log(LogLevel::Info, "[TCP Client] Disconnected");
         Ok(())
     }
 
